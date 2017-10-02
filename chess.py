@@ -6,6 +6,14 @@ import random, copy, time, cProfile
 not_on_board = [10*i for i in range(2,10)] + [10*i+9 for i in range(2,10)]
 on_board = [square for square in range(20,100) if square not in not_on_board]
 
+col_dict = {1: "a", 2: "b", 3: "c", 4: "d", 5: "e", 6: "f", 7: "g", 8: "h"}
+col_dict_ = {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6, "g": 7, "h": 8}
+piece_dict = {1: "P", 2: "N", 3: "B", 4: "R", 5: "Q", 6: "K"}
+piece_dict_ = {"P": 1, "N": 2, "B": 3, "R": 4, "Q": 5, "K": 6}
+
+#maps piece representations to values
+value_dict = {1: 1, 2: 3, 3: 3, 4: 5, 5: 9, 6: 0}
+
 def initialise_board():
     """creates initial chess position"""
     board = [0]*120 #empty chess board
@@ -73,11 +81,6 @@ def print_board2(board):
             line += " |"
         print line
     print "   a   b   c   d   e   f   g   h"
-
-col_dict = {1: "a", 2: "b", 3: "c", 4: "d", 5: "e", 6: "f", 7: "g", 8: "h"}
-col_dict_ = {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6, "g": 7, "h": 8}
-piece_dict = {1: "P", 2: "N", 3: "B", 4: "R", 5: "Q", 6: "K"}
-piece_dict_ = {"P": 1, "N": 2, "B": 3, "R": 4, "Q": 5, "K": 6}
 
 def printable_move(move):
     """converts internal square representation to common chess notation"""
@@ -358,8 +361,9 @@ def make_move(board,move_seq,move):
 
 def play_game(num_moves,white,black,verbose=True):
     """if white/black = random, computer makes random choice
+    if white/black = heuristic, computer uses heuristic
     if white/black = human, computer expects human player to make inputs
-    maximum number of moves is num_moves"""
+    maximum number of moves is num_moves. returns outcome of game as points for white"""
     board = initialise_board()
     if verbose:
             print_board2(board)
@@ -373,8 +377,7 @@ def play_game(num_moves,white,black,verbose=True):
     position_hashes = dict()
     while num <= num_moves:
         h = hash(tuple(board)+tuple([turn]))
-        if verbose:
-            print "hash=",h
+        #print "hash=",h
         if h not in position_hashes:
             position_hashes[h] = 1
         else:
@@ -382,19 +385,23 @@ def play_game(num_moves,white,black,verbose=True):
         if verbose:
             print "Turn =",turn, "Move number =", num
         possible_moves = make_move_list(board,move_seq,turn)
-        if verbose:
-            move_string = "Possible moves"
-            for move in possible_moves:
-                move_string += (", " + printable_move(move))
-            print move_string
+        #if verbose:
+        #    move_string = "Possible moves"
+        #    for move in possible_moves:
+        #        move_string += (", " + printable_move(move))
+        #    print move_string
         if len(possible_moves) == 0: #no possible moves
             #if in check, checkmate
             if king_hanging(board,move_seq,turn,None):
                 print turn, "is checkmate!"
+                if turn == "white":
+                    return 0
+                else:
+                    return 1
             #else stalemate
             else:
                 print turn, "is stalemate!"
-            break
+                return 0.5
         
         #threefold repetition"
         #ignores possible hash collision. to deal with this, store list of historic
@@ -402,17 +409,17 @@ def play_game(num_moves,white,black,verbose=True):
         #do another check of the full board positions
         if position_hashes[h] == 3:
             print "draw due to threefold repetition"
-            break
+            return 0.5
             
         #if too little material on board, draw (K-K,KN-K,K-KN,KB-K,K-KB)
         if num_pieces == 2:
             print "Draw due to insufficient material!"
-            break
+            return 0.5
         if num_pieces == 3:
             pieces = [abs(board[square]) for square in on_board if board[square] != 0]
             if 2 in pieces or 3 in pieces:
                 print "Draw due to insufficient material!"
-                break
+                return 0.5
                 
         #50 move rule        
         #print "old_num_pieces=",old_num_pieces, "num_pieces=",num_pieces
@@ -421,12 +428,38 @@ def play_game(num_moves,white,black,verbose=True):
             fifty_move_counter += 1
             if fifty_move_counter >= 100:
                 print "Draw due to 50 move rule"
-                break
+                return 0.5
         else:
             fifty_move_counter = 0        
                 
         if (turn == "white" and white == "random") or (turn == "black" and black == "random"):
             choice = random.choice(possible_moves)
+        
+        elif (turn == "white" and white == "heuristic") or (turn == "black" and black == "heuristic"):
+            print "using heuristic"
+            if turn == "white":
+                best_score = float("-inf")
+            else:
+                best_score = float("inf")
+            best_move = None
+            for move in possible_moves:
+                board_copy = copy.copy(board)
+                make_move(board_copy,[],move)
+                #print board_copy
+                score = count_material(board_copy)
+                #print "move considered=",move
+                #print "score=",score
+                if turn == "white":
+                    if score > best_score:
+                        best_score = score
+                        best_move = move
+                else:
+                    if score < best_score:
+                        best_score = score
+                        best_move = move
+            choice = best_move
+            #print "best_move=",best_move
+                
         else:
             valid = False
             while not valid: 
@@ -448,6 +481,7 @@ def play_game(num_moves,white,black,verbose=True):
         move_seq.append(choice)
         if verbose:
             print "Move =", printable_move(choice)
+            #print move_seq
        
         #50 move rule: updating counter if no pawn has moved and a piece has not been captured 
         pawn_moved = (abs(board[choice[0]]) == 1)
@@ -456,6 +490,7 @@ def play_game(num_moves,white,black,verbose=True):
         num_pieces = sum(1 if board[square] != 0 else 0 for square in on_board) 
         
         if verbose:
+            #print board
             print_board2(board)
         if turn == "white":
             turn = "black"
@@ -464,6 +499,9 @@ def play_game(num_moves,white,black,verbose=True):
         num += 1
         if verbose:
             print "\n"
+    if num > num_moves:
+        print "move limit reached"
+        return None
     if verbose:
             seq_string = "All moves"
             i = 1
@@ -548,20 +586,97 @@ def setup_position(pos):
 def test_suite():
     """tests play_game function"""
     
-    
     #error-free execution of lots of random games
     time0 = time.time()
-    for count in range(100):
-        play_game(500,"random","random",verbose = False)
+    white_wins = 0
+    black_wins = 0
+    draws = 0
+    undecided_games = 0
+    total_games = 10
+    for count in range(total_games + 1):
+        outcome = play_game(500,"random","random",verbose = False)
+        if outcome == 1:
+            white_wins += 1
+        elif outcome == 0:
+            black_wins += 1
+        elif outcome == 0.5:
+            draws += 1
+        else:
+            undecided_games += 1
     time1 = time.time()
     print "total time elapsed = ",time1-time0,"seconds"
     
+    #reasonable execution time
+    assert 1.0 * (time1 - time0)/total_games < 1
     
+    #reasonable game outcomes
+    white_percentage = 1.0 * (white_wins + 0.5 * draws) / (white_wins + black_wins + draws)
+    print white_percentage
+    assert 0.3 <= white_percentage <= 0.7
+    assert 1.0 * undecided_games/total_games < 0.2
+    assert 1.0 * draws/total_games > 0.5
+    
+    #list of possible moves is correct
+    #starting position is correct
+    board = initialise_board()
+    move_seq = []
+    expected = set([(31,41),(31,51),(32,42),(32,52),(33,43),(33,53),(34,44),(34,54),(35,45),\
+    (35,55),(36,46),(36,56),(37,47),(37,57),(38,48),(38,58),(22,41),(22,43),(27,46),(27,48)])
+    assert set(make_move_list(board,move_seq,"white")) == expected
+    
+    board = [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 4, 0, 3, 5, 6, 0, 0, 4, 100, 100, 1, 1, 1, 1, 0, 1, 1, 1, 100, 100, 0, 0, 2, 0, 0, 2, 0, 0, 100, 100, 0, 0, 3, 0, 1, 0, 0, 0, 100, 100, 0, 0, -3, 0, -1, 0, 0, 0, 100, 100, 0, 0, -2, 0, 0, -2, 0, 0, 100, 100, -1, -1, -1, -1, 0, -1, -1, -1, 100, 100, -4, 0, -3, -5, -6, 0, 0, -4, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+    move_seq = [(35, 55), (85, 65), (27, 46), (97, 76), (22, 43), (92, 73), (26, 53), (96, 63)]
+    expected = set([(21, 22), (24, 35), (25, 26), (25, 35), (25, 27), (28, 27), (28, 26), (31, 41), (31, 51), (32, 42), (32, 52), (34, 44), (34, 54), (37, 47), (37, 57), (38, 48), (38, 58), (43, 64), (43, 62), (43, 51), (43, 22), (43, 35), (46, 67), (46, 65), (46, 54), (46, 58), (46, 27), (53, 64), (53, 75), (53, 86), (53, 42), (53, 62), (53, 71), (53, 44), (53, 35), (53, 26)])
+    assert set(make_move_list(board,move_seq,"white")) == expected
+    
+    board = [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 4, 0, 3, 5, 6, 0, 0, 4, 100, 100, 1, 1, 1, 1, 0, 1, 1, 1, 100, 100, 0, 0, 2, 0, 0, 2, 0, 0, 100, 100, 0, 0, 0, 0, 1, 0, 0, 0, 100, 100, 0, 0, -3, 0, -1, 0, 0, 0, 100, 100, 0, 0, -2, 0, 0, -2, 0, 0, 100, 100, -1, -1, -1, -1, 0, 3, -1, -1, 100, 100, -4, 0, -3, -5, -6, 0, 0, -4, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]    
+    move_seq = [(35, 55), (85, 65), (27, 46), (97, 76), (22, 43), (92, 73), (26, 53), (96, 63), (53, 86)]
+    expected = set([(95, 85), (95, 86), (95, 96)])
+    assert set(make_move_list(board,move_seq,"black")) == expected
+    
+    board = [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 4, 0, 3, 5, 4, 0, 6, 0, 100, 100, 1, 1, 1, 1, 0, 1, 1, 1, 100, 100, 0, 0, 2, 0, 0, 2, 0, 0, 100, 100, 0, 0, 0, 0, 1, 0, 0, 0, 100, 100, 0, 0, -3, 0, -1, 0, 0, 0, 100, 100, 0, 0, -2, 0, 0, -2, 0, 0, 100, 100, -1, -1, -1, -1, 0, 0, -1, -1, 100, 100, -4, 0, -3, -5, -6, 0, 0, -4, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+    move_seq = [(35, 55), (85, 65), (27, 46), (97, 76), (22, 43), (92, 73), (26, 53), (96, 63), (53, 86), (95, 86), (25, 27), (86, 95), (26, 25)]
+    expected = set([(63, 74), (63, 85), (63, 96), (63, 52), (63, 41), (63, 72), (63, 54), (63, 45), (63, 36), (73, 92), (73, 85), (73, 52), (73, 54), (73, 61), (76, 97), (76, 55), (76, 57), (76, 68), (76, 64), (81, 71), (81, 61), (82, 72), (82, 62), (84, 74), (84, 64), (87, 77), (87, 67), (88, 78), (88, 68), (91, 92), (94, 85), (95, 85), (95, 86), (95, 96), (98, 97), (98, 96)])
+    assert set(make_move_list(board,move_seq,"black")) == expected
 
+    #checkmate and stalemate tests
+    board = [100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,6,-5,-6,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100]
+    move_seq == []
+    turn = "white"
+    colour = "white"
+    assert len(make_move_list(board,move_seq,turn)) == 0
+    assert king_hanging(board,move_seq,colour,None) == True
+
+    board = [100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,6,-4,-6,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100]
+    assert len(make_move_list(board,move_seq,turn)) == 1
+    assert king_hanging(board,move_seq,colour,None) == True
+    
+    board = [100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,6,-3,-6,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100]
+    assert len(make_move_list(board,move_seq,turn)) == 0
+    assert king_hanging(board,move_seq,colour,None) == False
+    
+    board = [100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,6,-2,-6,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100]
+    assert len(make_move_list(board,move_seq,turn)) == 1
+    assert king_hanging(board,move_seq,colour,None) == False
+    
+    #board setup and printing test
+    new_board = setup_position(['Pa2,Pb2,Ra1,Ke1','Pa7,Ke8'])
+    print_board2(new_board)
+
+def count_material(board):
+    """returns material difference on board for white and black, using values in value_dict"""
+    white_material = 0
+    black_material = 0
+    for square in on_board:
+        if board[square] > 0:
+            white_material += value_dict[board[square]]
+        elif board[square] < 0:
+            black_material += value_dict[abs(board[square])]
+    return white_material - black_material
+
+        
 #play_game(200,'random','random',verbose = True)
-#cProfile.run("test()")
+cProfile.run("test_suite()")
 
-#play_game(200,"human","human",verbose = True)
-
-new_board = setup_position(['Pa2,Pb2,Ra1,Ke1','Pa7,Ke8'])
-print_board2(new_board)
+#board representation: object-oriented?
+#other simple heuristics: checkmate possible?, piece activation, piece defenses, king safety
