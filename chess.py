@@ -52,6 +52,8 @@ def initialise_board():
         board[i] = -1
     return board
 
+initial_board = initialise_board()
+
 def print_board(board):
     """prints board using numbers"""
     for i in range(12):
@@ -482,6 +484,59 @@ def evaluate_pos(board,move_seq,turn,position_hashes,h,num_pieces,old_num_pieces
         fifty_move_counter = 0
     return outcome, reason, possible_moves, fifty_move_counter        
 
+def tree_search(board,move_seq,turn,position_hashes,h,num_pieces,old_num_pieces,pawn_moved,fifty_move_counter,in_check,depth,outcome = None, poss_moves = None, alpha = float("-inf"),beta = float("inf")):
+    """evaluates all possible moves up to the depth and returns best one along with position evaluation"""
+    if poss_moves == None:
+        outcome, reason, poss_moves, fifty_move_counter = evaluate_pos(board,move_seq,turn,position_hashes,h,num_pieces,old_num_pieces,pawn_moved,fifty_move_counter,in_check)
+    #print "\n"
+    #print "tree_search"
+    #print "outcome=",outcome
+    #print "poss_moves=",poss_moves
+    #print "depth=",depth
+    #print "last move " + printable_move(move_seq[-1]) if len(move_seq) > 0 else "initial position"
+    
+    sgn = 1 if turn == "white" else -1
+    best_move = None
+    if outcome == 1:
+        score = sgn * 99999 #if this is inf, might not return any move if being checkmated is certain
+    elif outcome == 0.5:
+        score = 0
+    elif outcome == 0:
+        score = sgn * -99999
+    else:
+        if depth == 0:
+            best_move = random.choice(poss_moves)
+            score = sgn * count_material(board)
+        else:
+            score = float("-inf") #want to maximise score
+            new_turn = "black" if turn == "white" else "white"
+            new_old_num_pieces = num_pieces
+            random.shuffle(poss_moves) #o avoid threefold repetition
+            for move in poss_moves:
+                new_castling = True if abs(board[move[0]]) == 6 and abs(move[1]-move[0]) == 2 else False
+                new_pawn_moved = (abs(board[move[0]]) == 1)
+                board_copy = copy.copy(board)
+                make_move(board_copy,move_seq,move)
+                new_move_seq = move_seq + [move]
+                new_num_pieces = sum(1 if board_copy[square] != 0 else 0 for square in on_board)     
+                new_h = hash(tuple(board_copy)+tuple([new_turn]))
+                new_position_hashes = copy.copy(position_hashes)
+                if new_h not in new_position_hashes:
+                    new_position_hashes[new_h] = 1
+                else:
+                    new_position_hashes[new_h] += 1    
+                new_in_check = check_check(board_copy,new_move_seq,turn,move,new_castling)
+                t = -1 * tree_search(board_copy,new_move_seq,new_turn,new_position_hashes,new_h,new_num_pieces,new_old_num_pieces,new_pawn_moved,fifty_move_counter,new_in_check,depth-1,alpha=-1*beta,beta=-1*alpha)[1]
+                if t > score:
+                    score = t
+                    best_move = move
+                if score >= beta:
+                    return best_move,score
+                alpha = max(alpha,score)
+    #print "best_move=",best_move
+    #print "score=",score
+    #print "\n"
+    return best_move, score
 
 def play_game(num_moves,white,black,verbose=True):
     """if white/black = random, computer makes random choice
@@ -491,7 +546,7 @@ def play_game(num_moves,white,black,verbose=True):
     board = initialise_board()
     if verbose:
             print_board2(board)
-    num = 0
+    num = 1
     turn = "white"
     move_seq = []
     fifty_move_counter = 0
@@ -521,59 +576,10 @@ def play_game(num_moves,white,black,verbose=True):
         if (turn == "white" and white == "random") or (turn == "black" and black == "random"):
             choice = random.choice(possible_moves)
         
-        elif (turn == "white" and white == "heuristic") or (turn == "black" and black == "heuristic"):
-            best_score = float("-inf") if turn == "white" else float("inf")
-            best_moves = []
-            new_turn = "black" if turn == "white" else "white"
-            new_old_num_pieces = num_pieces
-            for move in possible_moves:
-                new_castling = True if abs(board[move[0]]) == 6 and abs(move[1]-move[0]) == 2 else False
-                new_pawn_moved = (abs(board[move[0]]) == 1)
-                board_copy = copy.copy(board)
-                make_move(board_copy,move_seq,move)
-                #print board_copy
-                new_move_seq = move_seq + [move]
-                new_num_pieces = sum(1 if board_copy[square] != 0 else 0 for square in on_board)     
-                new_h = hash(tuple(board_copy)+tuple([new_turn]))
-                new_position_hashes = copy.copy(position_hashes)
-                if new_h not in new_position_hashes:
-                    new_position_hashes[new_h] = 1
-                else:
-                    new_position_hashes[new_h] += 1    
-                new_in_check = check_check(board_copy,new_move_seq,turn,move,new_castling)
-                outcome, reason, poss_moves, fifty_move_counter = evaluate_pos(board_copy,new_move_seq,new_turn,new_position_hashes,new_h,new_num_pieces,new_old_num_pieces,new_pawn_moved,fifty_move_counter,new_in_check)
-                if outcome == 1:
-                    score = float("inf")
-                elif outcome == 0.5:
-                    score = 0
-                elif outcome == 0:
-                    score = float("-inf")
-                else:
-                    score = count_material(board_copy)
-                        
-                #print "move considered=",printable_move(move)
-                #print "score=",score
-                if turn == "white":
-                    if score > best_score:
-                        best_score = score
-                        best_moves = [move]
-                    elif score == best_score:
-                        best_moves.append(move)
-                else:
-                    if score < best_score:
-                        best_score = score
-                        best_moves = [move]
-                    elif score == best_score:
-                        best_moves.append(move)
-            choice = random.choice(best_moves)
-            #seq_string = "Best moves"
-            #i = 1
-            #for move in best_moves:
-            #    seq_string += (" " + str(i) + "." + printable_move(move))
-            #    i += 1
-            #print seq_string
-            #print "heuristic choice = ", printable_move(choice)      
-                      
+        elif (turn == "white" and white == "heuristic") or (turn == "black" and black == "heuristic"):     
+            choice, evaluation = tree_search(board,move_seq,turn,position_hashes,h,num_pieces,old_num_pieces,pawn_moved,fifty_move_counter,in_check,2,outcome = outcome, poss_moves = possible_moves)
+            #print "choice = ",choice
+            #print "evaluation = ", evaluation          
         else:
             valid = False
             while not valid: 
@@ -825,5 +831,4 @@ def test_suite():
 #play_game(200,'random','random',verbose = True)
 cProfile.run("test_suite()")
 
-#board representation: object-oriented?
-#other simple heuristics: piece activation, piece defenses, king safety
+#other simple heuristics: piece activation, central control, king safety
