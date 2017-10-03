@@ -98,7 +98,7 @@ def printable_move(move):
         return s + piece_dict[abs(promoted_to)]
     
 
-def calc_offsets(piece,pos,board,move_seq,sgn,with_castling = True):
+def calc_offsets(piece,pos,board,move_seq,sgn,with_castling = True,in_check = None):
     """determine potential offsets for a given piece type on a certain position on the board"""
     #print "piece=", piece
     #print "pos=",pos
@@ -125,22 +125,22 @@ def calc_offsets(piece,pos,board,move_seq,sgn,with_castling = True):
                 colour = "black"
                 sq = 95
             if sq not in [move[0] for move in move_seq]\
-            and not king_hanging(board,move_seq,colour,None):
+            and not king_hanging(board,move_seq,colour,move = None, in_check = in_check):
                 #kingside castling
                 if abs(board[sq+3]) == 4\
                 and board[sq+1] == 0 and board[sq+2] == 0:\
                 #check that king wouldn't castle over attacked square
-                    if not king_hanging(board,move_seq,colour,(sq,sq+1))\
-                    and not king_hanging(board,move_seq,colour,(sq,sq+2)):
+                    if not king_hanging(board,move_seq,colour,(sq,sq+1),in_check)\
+                    and not king_hanging(board,move_seq,colour,(sq,sq+2),in_check):
                         #add castling to offsets
                         offsets.append(2)
                 #queenside castling
                 if abs(board[sq-4]) == 4\
                 and board[sq-1] == 0 and board[sq-2] and board[sq-3] == 0:\
                     #check that king wouldn't castle over attacked square
-                    if not king_hanging(board,move_seq,colour,(sq,sq-1))\
-                    and not king_hanging(board,move_seq,colour,(sq,sq-2))\
-                    and not king_hanging(board,move_seq,colour,(sq,sq-3)):
+                    if not king_hanging(board,move_seq,colour,(sq,sq-1),in_check)\
+                    and not king_hanging(board,move_seq,colour,(sq,sq-2),in_check)\
+                    and not king_hanging(board,move_seq,colour,(sq,sq-3),in_check):
                         #add castling to offsets
                         offsets.append(-2)
     #pawn
@@ -153,18 +153,19 @@ def calc_offsets(piece,pos,board,move_seq,sgn,with_castling = True):
             if pos in range(a,b) and board[pos + sgn*20] == 0:
                 offsets.append(sgn*20)
         #if can capture diagonally or en passant, add offset
-        if len(move_seq) > 0:
-            c = 56 + 5*sgn
-            d = 64 + 5*sgn
-            #topleft or bottomright
-            if sgn * board[pos + sgn*9] < 0 \
-            or (pos in range(c,d) and move_seq[-1] == (pos+sgn*19,pos-sgn) \
-            and board[pos-sgn] == -1*sgn): #pawn to the left
+        c = 56 + 5*sgn
+        d = 64 + 5*sgn
+        #topleft or bottomright
+        if sgn * board[pos + sgn*9] < 0:
+             offsets.append(sgn*9)
+        elif len(move_seq) >0:
+            if (pos in range(c,d) and move_seq[-1] == (pos+sgn*19,pos-sgn) and board[pos-sgn] == -1*sgn): #pawn to the left
                 offsets.append(sgn*9)
-            #topright or bottomright
-            if sgn * board[pos + sgn*11] < 0 \
-            or (pos in range(c,d) and move_seq[-1] == (pos+sgn*21,pos+sgn) \
-            and board[pos+sgn] == -1*sgn): #pawn to the right
+        #topright or bottomright
+        if sgn * board[pos + sgn*11] < 0:
+            offsets.append(sgn*11) 
+        elif len(move_seq) >0:
+            if (pos in range(c,d) and move_seq[-1] == (pos+sgn*21,pos+sgn) and board[pos+sgn] == -1*sgn): #pawn to the right
                 offsets.append(sgn*11)
     #bishop
     elif piece == 3:
@@ -206,83 +207,165 @@ def calc_offsets(piece,pos,board,move_seq,sgn,with_castling = True):
                     i += 1
     return offsets  
 
-def king_hanging(board,move_seq,colour,move):
-    """checks whether, after colour's move, colour's king can be captured in a given 
-    position by the other player"""
-    #print "calling king_hanging with move=",move,"colour=",colour
-    if colour == "white":
-        sgn = 1
+def attacks(board,a,b):
+    """returns True if there is a piece on square a attacking square b"""    
+    piece = board[a]
+    if piece == 0:
+        return False
+    sgn = 1 if piece > 0 else -1
+    if abs(piece) != 1:
+        return b-a in calc_offsets(sgn*piece,a,board,[],sgn,with_castling = False) 
     else:
-        sgn = -1
-    board_copy = copy.copy(board)
-    make_move(board_copy,move_seq,move)
-    #if the move list has a move with target square the sgn's king, return True
-    kings_square = board_copy.index(sgn*6)
-    
-    #check whether new square attacked: check around king whether there are pawns diagonally opposite or knights an L-offset away or king adjacent
+        return b-a in (sgn*9,sgn*11)                                                   
+    #diff % 9 == 0 or diff % 11 == 0 or (move[1] % 10 == kings_square % 10) or (move[1]/10 == kings_square/10)
+
+def is_attacked(board,square,sgn):
+    """returns True if square is attacked by player whose turn it is"""
+    #check whether there are pawns diagonally opposite or knights an L-offset away or king adjacent
     #then check along rows/columns (rooks, queens) and diagonals (bishops, queens) until hit a piece
     
     for direction in [10,-10,-1,1]: #check rows and colums (up, down, left, right)
-        offset = direction
-        new_sq = kings_square+offset
+        new_sq = square + direction
         while new_sq in on_board:
-            if board_copy[new_sq] in (-4*sgn,-5*sgn):
+            if board[new_sq] in (4*sgn,5*sgn):
                 return True
-            elif board_copy[new_sq] != 0:
+            elif board[new_sq] != 0:
                 break
             else:
-                offset += direction
-                new_sq = kings_square+offset
+                new_sq += direction
 
     for direction in [9,-9,11,-11]: #check diagonals (up left, down right, up right, down left)
-        offset = direction
-        new_sq = kings_square+offset
+        new_sq = square + direction
         while new_sq in on_board:
-            if board_copy[new_sq] in (-3*sgn,-5*sgn):
+            if board[new_sq] in (3*sgn,5*sgn):
                 return True
-            elif board_copy[new_sq] != 0:
+            elif board[new_sq] != 0:
                 break
             else:
-                offset += direction
-                new_sq = kings_square+offset
+                new_sq += direction
     
-    for offset in [sgn*9,sgn*11]: #check pawns
-        new_sq = kings_square+offset
-        if board_copy[new_sq] == -1*sgn:
+    for offset in [-9*sgn,-11*sgn]: #check pawns
+        new_sq = square+offset
+        if board[new_sq] == sgn:
             return True
     
     for offset in [-11,-10,-9,-1,1,9,10,11]: #check king
-        new_sq = kings_square + offset
-        if board_copy[new_sq] == -6*sgn:
+        new_sq = square + offset
+        if board[new_sq] == 6*sgn:
             return True
     
     #check knights    
-    if kings_square % 10 == 1: #king on a file
+    if square % 10 == 1: #square on a file
         offsets = [21,19,12,-21,-19,-8]
-    elif kings_square % 10 == 8: #king on h file
+    elif square % 10 == 8: #square on h file
         offsets = [21,19,8,-21,-19,-12]
     else:
-        offsets = [21,19,8,12,-21,-19,-8,-12] #king somewhere else
+        offsets = [21,19,8,12,-21,-19,-8,-12] #square somewhere else
     for offset in offsets:
-        new_sq = kings_square + offset
-        if board_copy[new_sq] == -2*sgn:
+        new_sq = square + offset
+        if board[new_sq] == 2*sgn:
             return True 
 
     #if no flag is raised
-    return False 
+    return False   
 
-def make_move_list(board,move_seq,colour,check_for_king_hanging = True, with_castling = True):
+def king_hanging(board,move_seq,colour,move,in_check = None):
+    """checks whether, after colour's move, colour's king can be captured in a given 
+    position by the other player. in_check indicates whether colour is in check in the board position"""
+    #print "calling king_hanging with move=",move,"colour=",colour
+    sgn = 1 if colour == "white" else -1
+    if move == None and in_check == True:
+        return True
+    if move == None or in_check != False: #in_check might be unknown
+        board_copy = copy.copy(board)
+        make_move(board_copy,move_seq,move)
+        kings_square = board_copy.index(sgn*6)
+        return is_attacked(board_copy,kings_square,-1*sgn)
+    kings_square = board.index(sgn*6)
+    diff = move[0] - kings_square
+    if abs(board[move[0]]) == 6 or diff % 9 == 0 or diff % 11 == 0 or (move[0] % 10 == kings_square % 10) or (move[0]/10 == kings_square/10): #piece might have been pinned
+        board_copy = copy.copy(board)
+        make_move(board_copy,move_seq,move)
+        kings_square = board_copy.index(sgn*6)
+        return is_attacked(board_copy,kings_square,-1*sgn)
+    return False
+  
+def check_check(board,move_seq,turn,move,castling):
+    """determines whether move puts other player in check. board has been updated already"""
+    sgn = 1 if turn == "white" else -1
+    opp_king_sq = board.index(-6*sgn)
+    if attacks(board,move[1],opp_king_sq): #if moved piece attacks opposite king, return True (includes pawn promotion case)
+        return True
+    else: #if discovery possible, check pieces on row/col/diagonal. also check castling
+        diff = opp_king_sq - move[0]                      
+        if diff % 9 == 0:
+            direction = -9 if diff > 0 else 9
+            new_sq = move[0] + direction
+            while new_sq in on_board:
+                if board[new_sq] in (3*sgn,5*sgn):
+                    return True
+                elif board[new_sq] != 0:
+                    break
+                else:
+                    new_sq += direction    
+        elif diff % 11 == 0:
+            direction = -11 if diff > 0 else 11
+            new_sq = move[0] + direction
+            while new_sq in on_board:
+                if board[new_sq] in (3*sgn,5*sgn):
+                    return True
+                elif board[new_sq] != 0:
+                    break
+                else:
+                    new_sq += direction       
+        elif move[0] % 10 == opp_king_sq % 10:
+            direction = -10 if diff > 0 else 10
+            new_sq = move[0] + direction
+            while new_sq in on_board:
+                if board[new_sq] in (4*sgn,5*sgn):
+                    return True
+                elif board[new_sq] != 0:
+                    break
+                else:
+                    new_sq += direction           
+        elif move[0]/10 == opp_king_sq/10:
+            direction = -1 if diff > 0 else 1
+            new_sq = move[0] + direction
+            while new_sq in on_board:
+                if board[new_sq] in (4*sgn,5*sgn):
+                    return True
+                elif board[new_sq] != 0:
+                    break
+                else:
+                    new_sq += direction        
+        elif castling:
+            if sgn == 1:
+                if move[1] == 27: #kingside castling, so rook on f1
+                    if attacks(board,26,opp_king_sq):
+                        return True
+                else: #queenside castling, so rook on d1
+                    if attacks(board,24,opp_king_sq):
+                        return True
+            else:
+                if move[1] == 97: #kingside castling, so rook on f8
+                    if attacks(board,96,opp_king_sq):
+                        return True
+                else: #queenside castling, so rook on d8
+                    if attacks(board,94,opp_king_sq):
+                        return True
+        else:
+            return False
+     
+def make_move_list(board,move_seq,colour,check_for_king_hanging = True, with_castling = True, in_check = None):
     """list legal moves in a given position in the form: (old field,new field)
     for white: colour = "white", for black: colour = "black"
     need to be able to exclude castling moves so as to avoid 
     infinite recursion when checking whether castling puts the king in check 
     (opponent's castling needn't be considered as a response to determine 
     whether king is in check after castling)"""
+    #print "in_check=",in_check
     move_list=[]
-    if colour == "white":
-        sgn = 1
-    else:
-        sgn = -1
+    sgn = 1 if colour == "white" else -1
     #print "calling make_move_list, colour=",colour,"check_for_king_hanging=",check_for_king_hanging
     
     pairs = [(pair[0],abs(pair[1])) for pair in enumerate(board) if pair[0] in on_board and sgn*pair[1] > 0]
@@ -292,10 +375,7 @@ def make_move_list(board,move_seq,colour,check_for_king_hanging = True, with_cas
         #print "pos=",pos,"piece=",piece,"offsets=",offsets
         potential_targets = [pos + offset for offset in offsets]
         potential_targets = [target for target in potential_targets if target in on_board]
-        if piece != 1: #pawns already checked
-            targets = [target for target in potential_targets if sgn*board[target] <= 0]
-        else:
-            targets = potential_targets
+        targets = [target for target in potential_targets if sgn*board[target] <= 0] if piece != 1 else potential_targets # pawns already checked
         #if pawn moves to last row (8th or 1st), promote to N/B/R/Q
         if piece == 1:
             for target in targets:
@@ -317,7 +397,7 @@ def make_move_list(board,move_seq,colour,check_for_king_hanging = True, with_cas
             #if after move own king is in check, remove this move from the move list
             #print "checking whether king hanging after move=",move
             #print_board2(board)
-            if king_hanging(board,move_seq,colour,move):
+            if king_hanging(board,move_seq,colour,move,in_check = in_check):
                 #print "king hanging after ",move," so removing"
                 move_list.remove(move)
     return move_list
@@ -327,10 +407,7 @@ def make_move(board,move_seq,move):
     if move is not None:
         #if pawn promotes
         if len(move) > 2:
-            if board[move[0]] > 0:
-                sgn = 1
-            else:
-                sgn = -1
+            sgn = 1 if board[move[0]] > 0 else -1
             board[move[1]] = sgn * move[2]
         #elif pawn takes en passant (i.e. pawn moves one square diagonally to an empty square)
         elif abs(board[move[0]]) == 1 and abs(move[1]-move[0]) in (9,11) and board[move[1]] == 0:   
@@ -359,6 +436,53 @@ def make_move(board,move_seq,move):
             board[move[1]] = board[move[0]]
         board[move[0]] = 0
 
+def evaluate_pos(board,move_seq,turn,position_hashes,h,num_pieces,old_num_pieces,pawn_moved,fifty_move_counter,in_check = None):
+    """checks for checkmate/stalemate/fifty-move rule/threefold repetition/insufficient material"""
+    #print "in-check=",in_check
+    reason = None
+    outcome = None
+    possible_moves = make_move_list(board,move_seq,turn,in_check = in_check)
+    if len(possible_moves) == 0: #no possible moves
+        #if in check, checkmate
+        if king_hanging(board,move_seq,turn,None,in_check = in_check):
+            reason = "checkmate"
+            outcome = 0 if turn == "white" else 1
+        #else stalemate
+        else:
+            reason = "stalemate"
+            outcome = 0.5
+        
+    #threefold repetition"
+    #ignores possible hash collision. to deal with this, store list of historic
+    #board positions and in the case of triple occurence of a hash value,
+    #do another check of the full board positions
+    elif position_hashes[h] == 3:
+        reason = "threefold repetition"
+        outcome = 0.5
+        
+    #if too little material on board, draw (K-K,KN-K,K-KN,KB-K,K-KB)
+    elif num_pieces == 2:
+        reason = "insufficient material"
+        outcome = 0.5
+    elif num_pieces == 3:
+        pieces = [abs(board[square]) for square in on_board if board[square] != 0]
+        if 2 in pieces or 3 in pieces:
+            reason = "insufficient material"
+            outcome = 0.5
+            
+    #50 move rule        
+    #print "old_num_pieces=",old_num_pieces, "num_pieces=",num_pieces
+    #print "pawn_moved=",pawn_moved
+    elif num_pieces == old_num_pieces and not pawn_moved:
+        fifty_move_counter += 1
+        if fifty_move_counter >= 100:
+            reason = "50 move rule"
+            outcome = 0.5
+    else:
+        fifty_move_counter = 0
+    return outcome, reason, possible_moves, fifty_move_counter        
+
+
 def play_game(num_moves,white,black,verbose=True):
     """if white/black = random, computer makes random choice
     if white/black = heuristic, computer uses heuristic
@@ -367,7 +491,7 @@ def play_game(num_moves,white,black,verbose=True):
     board = initialise_board()
     if verbose:
             print_board2(board)
-    num = 1
+    num = 0
     turn = "white"
     move_seq = []
     fifty_move_counter = 0
@@ -375,91 +499,81 @@ def play_game(num_moves,white,black,verbose=True):
     num_pieces = 32
     pawn_moved = None
     position_hashes = dict()
+    h = hash(tuple(board)+tuple([turn]))
+    position_hashes[h] = 1
+    in_check = False #indicates whether player to move is in check
+    castling = False #indicates whether last move was castling
+    
     while num <= num_moves:
-        h = hash(tuple(board)+tuple([turn]))
-        #print "hash=",h
-        if h not in position_hashes:
-            position_hashes[h] = 1
-        else:
-            position_hashes[h] += 1
         if verbose:
             print "Turn =",turn, "Move number =", num
-        possible_moves = make_move_list(board,move_seq,turn)
-        #if verbose:
-        #    move_string = "Possible moves"
-        #    for move in possible_moves:
-        #        move_string += (", " + printable_move(move))
-        #    print move_string
-        if len(possible_moves) == 0: #no possible moves
-            #if in check, checkmate
-            if king_hanging(board,move_seq,turn,None):
-                print turn, "is checkmate!"
-                if turn == "white":
-                    return 0
-                else:
-                    return 1
-            #else stalemate
-            else:
-                print turn, "is stalemate!"
-                return 0.5
         
-        #threefold repetition"
-        #ignores possible hash collision. to deal with this, store list of historic
-        #board positions and in the case of triple occurence of a hash value,
-        #do another check of the full board positions
-        if position_hashes[h] == 3:
-            print "draw due to threefold repetition"
-            return 0.5
-            
-        #if too little material on board, draw (K-K,KN-K,K-KN,KB-K,K-KB)
-        if num_pieces == 2:
-            print "Draw due to insufficient material!"
-            return 0.5
-        if num_pieces == 3:
-            pieces = [abs(board[square]) for square in on_board if board[square] != 0]
-            if 2 in pieces or 3 in pieces:
-                print "Draw due to insufficient material!"
-                return 0.5
-                
-        #50 move rule        
-        #print "old_num_pieces=",old_num_pieces, "num_pieces=",num_pieces
-        #print "pawn_moved=",pawn_moved
-        if num_pieces == old_num_pieces and not pawn_moved:
-            fifty_move_counter += 1
-            if fifty_move_counter >= 100:
-                print "Draw due to 50 move rule"
-                return 0.5
-        else:
-            fifty_move_counter = 0        
+        outcome, reason, possible_moves, fifty_move_counter = evaluate_pos(board,move_seq,turn,position_hashes,h,num_pieces,old_num_pieces,pawn_moved,fifty_move_counter,in_check)
+        if outcome != None:
+            if outcome == 1:
+                print "White wins due to",reason
+            elif outcome == 0:
+                print "Black wins due to",reason
+            else:
+                print "Draw due to",reason
+            return outcome        
                 
         if (turn == "white" and white == "random") or (turn == "black" and black == "random"):
             choice = random.choice(possible_moves)
         
         elif (turn == "white" and white == "heuristic") or (turn == "black" and black == "heuristic"):
-            print "using heuristic"
-            if turn == "white":
-                best_score = float("-inf")
-            else:
-                best_score = float("inf")
-            best_move = None
+            best_score = float("-inf") if turn == "white" else float("inf")
+            best_moves = []
+            new_turn = "black" if turn == "white" else "white"
+            new_old_num_pieces = num_pieces
             for move in possible_moves:
+                new_castling = True if abs(board[move[0]]) == 6 and abs(move[1]-move[0]) == 2 else False
+                new_pawn_moved = (abs(board[move[0]]) == 1)
                 board_copy = copy.copy(board)
-                make_move(board_copy,[],move)
+                make_move(board_copy,move_seq,move)
                 #print board_copy
-                score = count_material(board_copy)
-                #print "move considered=",move
+                new_move_seq = move_seq + [move]
+                new_num_pieces = sum(1 if board_copy[square] != 0 else 0 for square in on_board)     
+                new_h = hash(tuple(board_copy)+tuple([new_turn]))
+                new_position_hashes = copy.copy(position_hashes)
+                if new_h not in new_position_hashes:
+                    new_position_hashes[new_h] = 1
+                else:
+                    new_position_hashes[new_h] += 1    
+                new_in_check = check_check(board_copy,new_move_seq,turn,move,new_castling)
+                outcome, reason, poss_moves, fifty_move_counter = evaluate_pos(board_copy,new_move_seq,new_turn,new_position_hashes,new_h,new_num_pieces,new_old_num_pieces,new_pawn_moved,fifty_move_counter,new_in_check)
+                if outcome == 1:
+                    score = float("inf")
+                elif outcome == 0.5:
+                    score = 0
+                elif outcome == 0:
+                    score = float("-inf")
+                else:
+                    score = count_material(board_copy)
+                        
+                #print "move considered=",printable_move(move)
                 #print "score=",score
                 if turn == "white":
                     if score > best_score:
                         best_score = score
-                        best_move = move
+                        best_moves = [move]
+                    elif score == best_score:
+                        best_moves.append(move)
                 else:
                     if score < best_score:
                         best_score = score
-                        best_move = move
-            choice = best_move
-            #print "best_move=",best_move
-                
+                        best_moves = [move]
+                    elif score == best_score:
+                        best_moves.append(move)
+            choice = random.choice(best_moves)
+            #seq_string = "Best moves"
+            #i = 1
+            #for move in best_moves:
+            #    seq_string += (" " + str(i) + "." + printable_move(move))
+            #    i += 1
+            #print seq_string
+            #print "heuristic choice = ", printable_move(choice)      
+                      
         else:
             valid = False
             while not valid: 
@@ -469,10 +583,7 @@ def play_game(num_moves,white,black,verbose=True):
                 start_sq = (int(m[0][1]) + 1) * 10 + start_col
                 finish_col = col_dict_[m[1][0]]
                 finish_sq = (int(m[1][1]) + 1) * 10 + finish_col
-                if len(m) > 2:
-                    choice = (start_sq,finish_sq,piece_dict_[m[2]])
-                else:
-                    choice = (start_sq,finish_sq)
+                choice = (start_sq,finish_sq,piece_dict_[m[2]]) if len(m) > 2 else (start_sq,finish_sq)
                 print choice
                 if choice in possible_moves:
                     valid = True
@@ -483,19 +594,28 @@ def play_game(num_moves,white,black,verbose=True):
             print "Move =", printable_move(choice)
             #print move_seq
        
+        castling = True if abs(board[choice[0]]) == 6 and abs(choice[1]-choice[0]) == 2 else False
+        
         #50 move rule: updating counter if no pawn has moved and a piece has not been captured 
         pawn_moved = (abs(board[choice[0]]) == 1)
         old_num_pieces = num_pieces
         make_move(board,move_seq,choice) #execute move
-        num_pieces = sum(1 if board[square] != 0 else 0 for square in on_board) 
+        num_pieces = sum(1 if board[square] != 0 else 0 for square in on_board)
+        
+        #other player in check?                
+        in_check = check_check(board,move_seq,turn,choice,castling)
+        
+        h = hash(tuple(board)+tuple([turn]))
+        #print "hash=",h
+        if h not in position_hashes:
+            position_hashes[h] = 1
+        else:
+            position_hashes[h] += 1 
         
         if verbose:
             #print board
             print_board2(board)
-        if turn == "white":
-            turn = "black"
-        else:
-            turn = "white"
+        turn = "black" if turn == "white" else "white"
         num += 1
         if verbose:
             print "\n"
@@ -583,6 +703,17 @@ def setup_position(pos):
     
     return board
 
+def count_material(board):
+    """returns material difference on board for white and black, using values in value_dict"""
+    white_material = 0
+    black_material = 0
+    for square in on_board:
+        if board[square] > 0:
+            white_material += value_dict[board[square]]
+        elif board[square] < 0:
+            black_material += value_dict[abs(board[square])]
+    return white_material - black_material
+
 def test_suite():
     """tests play_game function"""
     
@@ -592,8 +723,8 @@ def test_suite():
     black_wins = 0
     draws = 0
     undecided_games = 0
-    total_games = 10
-    for count in range(total_games + 1):
+    total_games = 100
+    for count in range(total_games):
         outcome = play_game(500,"random","random",verbose = False)
         if outcome == 1:
             white_wins += 1
@@ -609,12 +740,35 @@ def test_suite():
     #reasonable execution time
     assert 1.0 * (time1 - time0)/total_games < 1
     
-    #reasonable game outcomes
+    ##reasonable game outcomes
     white_percentage = 1.0 * (white_wins + 0.5 * draws) / (white_wins + black_wins + draws)
     print white_percentage
     assert 0.3 <= white_percentage <= 0.7
     assert 1.0 * undecided_games/total_games < 0.2
     assert 1.0 * draws/total_games > 0.5
+    
+    #test heuristic function
+    time0 = time.time()
+    white_wins = 0
+    black_wins = 0
+    draws = 0
+    undecided_games = 0
+    total_games = 100
+    for count in range(total_games):
+        outcome = play_game(500,"random","heuristic",verbose = False)
+        if outcome == 1:
+            white_wins += 1
+        elif outcome == 0:
+            black_wins += 1
+        elif outcome == 0.5:
+            draws += 1
+        else:
+            undecided_games += 1
+    time1 = time.time()
+    print "total time elapsed = ",time1-time0,"seconds"
+
+    white_percentage = 1.0 * (white_wins + 0.5 * draws) / (white_wins + black_wins + draws)
+    print "heuristic average score", white_percentage
     
     #list of possible moves is correct
     #starting position is correct
@@ -639,6 +793,11 @@ def test_suite():
     expected = set([(63, 74), (63, 85), (63, 96), (63, 52), (63, 41), (63, 72), (63, 54), (63, 45), (63, 36), (73, 92), (73, 85), (73, 52), (73, 54), (73, 61), (76, 97), (76, 55), (76, 57), (76, 68), (76, 64), (81, 71), (81, 61), (82, 72), (82, 62), (84, 74), (84, 64), (87, 77), (87, 67), (88, 78), (88, 68), (91, 92), (94, 85), (95, 85), (95, 86), (95, 96), (98, 97), (98, 96)])
     assert set(make_move_list(board,move_seq,"black")) == expected
 
+    board = setup_position(["Ke1,Ra1,Rh1,Nb3,Ng3,Pc2,Pd2,Pe5","Ke8,Bb4,Bf3,Qh4,Pd5"])
+    move_seq = [(84,64)]
+    expected = set([(21, 31),(21, 41),(21, 51),(21, 61),(21, 71),(21, 81),(21, 91),(21, 22),(21, 23),(21, 24),(25, 26),(25, 36),(25, 27),(28, 38),(28, 48),(28, 58),(28, 27),(28, 26),(33, 43),(33, 53),(42, 63),(42, 61),(42, 54),(42, 23),(65, 75),(65, 74)])
+    assert set(make_move_list(board,move_seq,"white")) == expected
+
     #checkmate and stalemate tests
     board = [100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,6,-5,-6,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100]
     move_seq == []
@@ -662,21 +821,9 @@ def test_suite():
     #board setup and printing test
     new_board = setup_position(['Pa2,Pb2,Ra1,Ke1','Pa7,Ke8'])
     print_board2(new_board)
-
-def count_material(board):
-    """returns material difference on board for white and black, using values in value_dict"""
-    white_material = 0
-    black_material = 0
-    for square in on_board:
-        if board[square] > 0:
-            white_material += value_dict[board[square]]
-        elif board[square] < 0:
-            black_material += value_dict[abs(board[square])]
-    return white_material - black_material
-
         
 #play_game(200,'random','random',verbose = True)
 cProfile.run("test_suite()")
 
 #board representation: object-oriented?
-#other simple heuristics: checkmate possible?, piece activation, piece defenses, king safety
+#other simple heuristics: piece activation, piece defenses, king safety
