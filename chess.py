@@ -11,30 +11,6 @@ col_dict_ = {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6, "g": 7, "h": 8}
 piece_dict = {1: "P", 2: "N", 3: "B", 4: "R", 5: "Q", 6: "K"}
 piece_dict_ = {"P": 1, "N": 2, "B": 3, "R": 4, "Q": 5, "K": 6}
 
-pawn=0
-knight=0
-bishop=0
-rook=0
-queen=0
-king=0
-castling=0
-pawn_time=0
-knight_time=0
-brq_time=0
-king_time=0
-kh_time=0
-first=0
-second=0
-third=0
-fourth=0
-fifth=0
-cond1=0
-cond2=0
-castling_time=0
-t0=0
-t1=0
-t2=0
-
 #maps piece representations to values
 value_dict = {1: 1, 2: 3, 3: 3, 4: 5, 5: 9, 6: 0}
 
@@ -88,10 +64,6 @@ class Position(object):
         self.sgn = 1 if self.turn == "white" else -1
         self.move_seq = move_seq
         self.num = num
-        #if history == None: #history of all previous positions, including current one
-        #    self.history = [copy.deepcopy(self)] 
-        #else:
-        #    self.history = history
         if position_hashes == None:
             self.position_hashes = {hash(tuple(board)+tuple([turn])): 1}
         else:
@@ -105,8 +77,10 @@ class Position(object):
         self.pawn_moved = pawn_moved
         self.fifty_move_counter = fifty_move_counter
         self.in_check = in_check
-        self.castling = castling
-                                             
+        self.castling = castling #was last move castling move?
+    
+    #make rollback method: just keep track of past board positions, infer other attributes from there                                         
+                                                                                                                               
     def print_board(self):
         """prints board using numbers"""
         for i in range(12):
@@ -141,8 +115,7 @@ class Position(object):
         """execute a move on the board"""
         
         if move is not None:          
-            castling = True if abs(self.board[move[0]]) == 6 and abs(move[1]-move[0]) in (2,3) else False
-            
+            castling = True if abs(self.board[move[0]]) == 6 and abs(move[1]-move[0]) in (2,3) else False           
             if not just_board:
                 #will other player be in check?                
                 if update_in_check:
@@ -165,10 +138,13 @@ class Position(object):
             #elif pawn takes en passant (i.e. pawn moves one square diagonally to an empty square)
             elif abs(self.board[move[0]]) == 1 and abs(move[1]-move[0]) in (9,11) and self.board[move[1]] == 0:   
                 self.board[move[1]] = self.board[move[0]]
-                captured_pawn_on = self.move_seq[-1][1]
+                if just_board:
+                    captured_pawn_on = self.move_seq[-1][1]
+                else:
+                    captured_pawn_on = self.move_seq[-2][1]
                 self.board[captured_pawn_on] = 0
             #elif castling
-            elif self.castling:
+            elif castling:
                 self.board[move[1]] = self.board[move[0]] #king move
                 #rook move
                 if move[0] == 25:
@@ -201,7 +177,6 @@ class Position(object):
                 #print board
                 self.print_board2(self.board)
             self.num += 1
-            #self.history.append(copy.deepcopy(self))
             if verbose:
                 print "\n"
                 
@@ -213,80 +188,45 @@ class Position(object):
         #print "calc offsets"
         #print "piece=", piece
         #print "pos=",pos
-        global pawn,knight,bishop,rook,queen,king,castling, pawn_time,knight_time,brq_time,king_time, first, second, third, fourth, fifth, cond1, cond2, castling_time,t0,t1,t2
         piece_sgn = 1 if self.board[pos] > 0 else -1
-        
-        #mystery: why does calling the king section take so much longer compared to previous
-        #version although number of calls is same and number of times condition 1 is satisfied
-        #is much lower (factor 60)??
         
         #knight
         if piece == 2:
-            time0=time.time()
-            knight += 1
             if pos % 10 == 1: #knight on a file
                 offsets = [21,19,12,-21,-19,-8]
             elif pos % 10 == 8: #knight on h file
                 offsets = [21,19,8,-21,-19,-12]
             else:
                 offsets = [21,19,8,12,-21,-19,-8,-12] #knight somewhere else
-            knight_time+=time.time()-time0
         #king
-        elif piece == 6:
-            time0=time.time() 
-            king += 1   
+        elif piece == 6: 
             offsets = [-11,-10,-9,-1,1,9,10,11]
             if with_castling:
-                castling += 1
                 #check that king has not moved, rook is on original square, \
                 #all squares inbetween are empty, king is not in check
-                time00=time.time()
                 sq = 25 if piece_sgn == 1 else 95
-                time01=time.time()
-                #print self.move_seq
-                #print "\n"
-                if sq not in [move[0] for move in self.move_seq]: cond1+=1
-                time02=time.time()
-                if not self.king_hanging(move = None): cond2+=1
-                time03=time.time()
-                if sq not in [move[0] for move in self.move_seq] and not self.king_hanging(move = None):
-                    first+=1
+                if sq not in (move[0] for move in self.move_seq) and not self.king_hanging(move = None):
                     #kingside castling
                     if abs(self.board[sq+3]) == 4\
                     and self.board[sq+1] == 0 and self.board[sq+2] == 0:
                     #check that king wouldn't castle over attacked square
-                        second+=1
                         if not self.king_hanging((sq,sq+1))\
                         and not self.king_hanging((sq,sq+2)):
-                            third+=1
                             #add castling to offsets
                             offsets.append(2)
+                            #print pos,sq
                     #queenside castling
                     if abs(self.board[sq-4]) == 4\
                     and self.board[sq-1] == 0 and self.board[sq-2] and self.board[sq-3] == 0:              
                         #check that king wouldn't castle over attacked square
-                        fourth+=1
                         if not self.king_hanging((sq,sq-1))\
                         and not self.king_hanging((sq,sq-2))\
                         and not self.king_hanging((sq,sq-3)):
-                            fifth+=1
                             #add castling to offsets
                             offsets.append(-2)
-            king_time+=time.time()-time0
-            try:
-                t0 += time01-time00
-                t1 += time02-time01
-                t2 += time03-time02
-            except:
-                pass
-            try:
-                castling_time+=time.time()-time00
-            except:
-                pass
+                            #print pos,sq
         #pawn
         elif piece == 1:
-            time0=time.time()
-            pawn += 1
             a = 56 - piece_sgn*25
             b = 64 - piece_sgn*25
             offsets = []
@@ -309,25 +249,17 @@ class Position(object):
             elif len(self.move_seq) >0:
                 if (pos in range(c,d) and self.move_seq[-1] == (pos+piece_sgn*21,pos+piece_sgn) and self.board[pos+piece_sgn] == -1*piece_sgn): #pawn to the right
                     offsets.append(piece_sgn*11)
-            pawn_time+=time.time()-time0
         else:
-            time0=time.time()
             #bishop
             if piece == 3:
-                bishop += 1
                 directions = [11,-11,9,-9]
                 #11 is topright direction, -11 is bottomleft, 9 is topleft, -9 is bottomright
             #rook
             elif piece == 4:
-                rook += 1
-                time0=time.time()
                 directions = [10,-10,1,-1] #10 is up, -10 is down, 1 is right, -1 is left
             #queen
             elif piece == 5: 
-                queen += 1 
-                time0=time.time()  
-                directions = [11,-11,9,-9, 10,-10,1,-1] #bishop and rook directions
-            
+                directions = [11,-11,9,-9, 10,-10,1,-1] #bishop and rook directions            
             offsets = []
             for d in directions:
                 i = 1
@@ -337,7 +269,6 @@ class Position(object):
                         break
                     else:
                         i += 1
-            brq_time+=time.time()-time0
         return offsets  
 
 
@@ -416,21 +347,18 @@ class Position(object):
     def king_hanging(self,move):
         """checks whether, after colour's move, colour's king can be captured in a given 
         position by the other player."""
-        global kh_time
-        time0=time.time()
         #print "calling king_hanging with move=",move,"colour=",colour
         if move == None and self.in_check == True:
-            kh_time+=time.time()-time0
             return True
         if move == None or self.in_check != False: #in_check might be unknown
             old_board = self.board[:]
             self.make_move(move,update_in_check = False,just_board = True) #avoid infinite recursion
             kings_square = self.board.index(self.sgn* -6)
+            #print kings_square
             a = self.is_attacked(kings_square)
             self.board = old_board[:]
             self.turn = "black" if self.turn == "white" else "white"
             self.sgn = 1 if self.sgn == -1 else -1
-            kh_time+=time.time()-time0
             return a
         kings_square = self.board.index(self.sgn*6)
         diff = move[0] - kings_square
@@ -438,11 +366,11 @@ class Position(object):
             old_board = self.board[:]
             self.make_move(move,update_in_check = False,just_board = True) #avoid infinite recursion
             kings_square = self.board.index(self.sgn* -6)
+            #print kings_square
             a = self.is_attacked(kings_square)
             self.board = old_board[:]
             self.turn = "black" if self.turn == "white" else "white"
             self.sgn = 1 if self.sgn == -1 else -1
-            kh_time+=time.time()-time0
             return a
         return False
     
@@ -556,13 +484,13 @@ class Position(object):
         move_list = []
         #print "calling make_move_list, colour=",colour,"check_for_king_hanging=",check_for_king_hanging
         
-        pairs = [(pair[0],abs(pair[1])) for pair in enumerate(self.board) if pair[0] in on_board and self.sgn*pair[1] > 0]
+        pairs = ((pair[0],abs(pair[1])) for pair in enumerate(self.board) if pair[0] in on_board and self.sgn*pair[1] > 0)
         for pos, piece in pairs:
             offsets = self.calc_offsets(piece,pos,with_castling)
             #print "pos=",pos,"piece=",piece
             potential_targets = [pos + offset for offset in offsets]
             potential_targets = [target for target in potential_targets if target in on_board]
-            targets = [target for target in potential_targets if self.sgn*self.board[target] <= 0] if piece != 1 else potential_targets # pawns already checked
+            targets = (target for target in potential_targets if self.sgn*self.board[target] <= 0) if piece != 1 else potential_targets # pawns already checked
             #if pawn moves to last row (8th or 1st), promote to N/B/R/Q
             if piece == 1:
                 for target in targets:
@@ -620,8 +548,15 @@ def evaluate_pos(pos,in_check = None):
         possible_moves = pos.make_move_list()
     except:
         pos.print_board2()
-        print printable_move(pos.move_seq[-1])
+        seq_string = "All moves"
+        i = 1
+        for move in pos.move_seq:
+            seq_string += (" " + str(i) + "." + printable_move(move))
+            i += 1
+        print seq_string
+        print pos.castling
         raise ValueError
+        
     
     if len(possible_moves) == 0: #no possible moves
         #if in check, checkmate
@@ -946,7 +881,7 @@ def test_suite():
     black_wins = 0
     draws = 0
     undecided_games = 0
-    total_games = 100
+    total_games = 1000
     
     for count in range(total_games):
         outcome = play_game(500,"random","random",verbose = False)
@@ -960,32 +895,9 @@ def test_suite():
             undecided_games += 1
     time1 = time.time()
     print "total time elapsed = ",time1-time0,"seconds"
-    print "pawn=",pawn
-    print "knight=",knight
-    print "bishop=",bishop
-    print "rook=",rook
-    print "queen=",queen
-    print "king=",king
-    print "castling=",castling
-    print "pawn_time",pawn_time
-    print "knight_time",knight_time
-    print "brq_time",brq_time
-    print "king_time",king_time
-    print "kh_time",kh_time
-    print "first=",first
-    print "second=",second
-    print "third=",third
-    print "fourth=",fourth
-    print "fifth=",fifth
-    print "cond1=",cond1
-    print "cond2=",cond2
-    print "castling_time=",castling_time
-    print "t0=",t0
-    print "t1=",t1
-    print "t2=",t2
     
     #reasonable execution time
-    #assert 1.0 * (time1 - time0)/total_games < 1
+    assert 1.0 * (time1 - time0)/total_games < 1
     
     ##reasonable game outcomes
     white_percentage = 1.0 * (white_wins + 0.5 * draws) / (white_wins + black_wins + draws)
@@ -994,29 +906,29 @@ def test_suite():
     #assert 1.0 * undecided_games/total_games < 0.2
     #assert 1.0 * draws/total_games > 0.5
     
-#    #test heuristic function
-#    time0 = time.time()
-#    white_wins = 0
-#    black_wins = 0
-#    draws = 0
-#    undecided_games = 0
-#    total_games = 100
-#    for count in range(total_games):
-#        outcome = play_game(500,"random","heuristic",verbose = False, depth = 0)
-#        if outcome == 1:
-#            white_wins += 1
-#        elif outcome == 0:
-#            black_wins += 1
-#        elif outcome == 0.5:
-#            draws += 1
-#        else:
-#            undecided_games += 1
-#    time1 = time.time()
-#    print "total time elapsed = ",time1-time0,"seconds"
-#
-#    white_percentage = 1.0 * (white_wins + 0.5 * draws) / (white_wins + black_wins + draws)
-#    print "heuristic average score", white_percentage
-#    
+    #test heuristic function
+    time0 = time.time()
+    white_wins = 0
+    black_wins = 0
+    draws = 0
+    undecided_games = 0
+    total_games = 100
+    for count in range(total_games):
+        outcome = play_game(500,"random","heuristic",verbose = False, depth = 0)
+        if outcome == 1:
+            white_wins += 1
+        elif outcome == 0:
+            black_wins += 1
+        elif outcome == 0.5:
+            draws += 1
+        else:
+            undecided_games += 1
+    time1 = time.time()
+    print "total time elapsed = ",time1-time0,"seconds"
+
+    white_percentage = 1.0 * (white_wins + 0.5 * draws) / (white_wins + black_wins + draws)
+    print "heuristic average score", white_percentage
+    
 
         
 #play_game(200,'random','random',verbose = True)
