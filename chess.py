@@ -42,6 +42,8 @@ value_dict = {1: 1, 2: 3, 3: 3, 4: 5, 5: 9, 6: 99999}
 
 uni_pieces = {'bR':'♜', 'bN':'♞', 'bB':'♝', 'bQ':'♛', 'bK':'♚', 'bP':'♟',
                   'wR':'♖', 'wN':'♘', 'wB':'♗', 'wQ':'♕', 'wK':'♔', 'wP':'♙', '  ':'  '}
+                  
+table = None
 
 def initialise_board():
     """creates initial chess position"""
@@ -81,7 +83,7 @@ def initialise_board():
         board[i] = -1
     return board
 
-initial_board = initialise_board()
+initial_board = tuple(initialise_board())
 
 def print_board3(board):
     """prints board using letters and without the edges"""
@@ -110,21 +112,15 @@ def print_board3(board):
 
 class Position(object):
     """A chess position complete with history"""
-    def __init__(self,board,sgn = 1,move_seq = [],position_hashes = None,h = None,\
+    def __init__(self,board = initial_board,sgn = 1,move_seq = (),\
                 num_pieces = 32,old_num_pieces = None,pawn_moved = None,fifty_move_counter = 0,\
-                in_check = None,castling = False,num = 1, wc = (False,False), bc = (False,False), ep = None):
-        self.board = board
+                in_check = None,castling = False,num = 1, wc = (False,False), bc = (True,True), ep = None):
+        global ht
+        
+        self.board = list(board)
         self.sgn = sgn
-        self.move_seq = move_seq
+        self.move_seq = list(move_seq)
         self.num = num
-        if position_hashes == None:
-            self.position_hashes = {tuple(board)+tuple([self.sgn]): 1}
-        else:
-            self.position_hashes = position_hashes
-        if h == None:
-            self.h = tuple(board)+tuple([self.sgn])
-        else:
-            self.h = h
         self.num_pieces = num_pieces
         self.old_num_pieces = old_num_pieces
         self.pawn_moved = pawn_moved #was the last move a pawn move?
@@ -132,21 +128,26 @@ class Position(object):
         self.in_check = in_check #is current player in check?
         self.castling = castling #was last move castling move?
         self.history = [self.board[:]]
-        self.fmh = []
+        self.fmh = [self.fifty_move_counter]
         
-        self.wc = list(wc) #default args wc and bc need to be immutable
-        self.bc = list(bc)
-        self.wch = []
-        self.bch = []
+        self.wc = wc #default args wc and bc need to be immutable
+        self.bc = bc
+        self.wch = [self.wc]
+        self.bch = [self.bc]
         self.ep = ep
-        self.eph = []
+        self.eph = [self.ep]
+        
+        ht = dict()
+        zobrist_init()
+        h = zobrist_hash(self)
+        ht["ordered"] = [h]
+        ht[h] = {"moves": [0]}
+        
     
     #make rollback method: just keep track of past board positions, infer other attributes from there
     
     def rollback(self,depth):
         """reverts to previous board position. depth = 1 corresponds to directly previous one"""
-        
-        #assert depth > 0
         
         #print "rollback depth=",depth
         #print "before rollback:"
@@ -162,22 +163,16 @@ class Position(object):
         self.move_seq = self.move_seq[:-depth]
         #print "updated move_seq=",self.move_seq
         self.num -= depth
-        #can also keep track of hashes added to dict
-        self.position_hashes = dict()
-        for i in range(len(self.move_seq)):
-            x = tuple(self.history[i])+tuple([self.sgn])
-            if x not in self.position_hashes:
-                self.position_hashes[x] = 1
-            else:
-                self.position_hashes[x] += 1
-        self.h = tuple(self.board)+tuple([self.sgn])
+        
+        ht["ordered"] = ht["ordered"][:-depth]
+        
         self.num_pieces = sum(1 if self.board[square] != 0 else 0 for square in on_board)
         self.old_num_pieces = sum(1 if self.history[-1-depth][square] != 0 else 0 for square in on_board)
         self.pawn_moved = abs(self.move_seq[-depth][0]) == 1 if len(self.move_seq) > 0 else False    
-        self.fifty_move_counter = self.fmh[-depth]
+        self.fifty_move_counter = self.fmh[-1 - depth]
         self.in_check = None #maybe change
         if len(self.move_seq) > 0:
-            self.castling = abs(self.board[self.move_seq[-depth][0]]) == 6 and abs(self.move_seq[-depth][1]-self.move_seq[-depth][0]) in (2,3)
+            self.castling = abs(self.board[self.move_seq[-depth][0]]) == 6 and abs(self.move_seq[-depth][1]-self.move_seq[-depth][0]) == 2
         else:
             self.castling = False
         #just need to keep track of history from tree search onwards -> speedup?
@@ -188,14 +183,13 @@ class Position(object):
             #    del self.history[-1]
         self.history = new 
         self.fmh = self.fmh[:-depth]
-        
-        self.wc = self.wch[-depth]
-        self.bc = self.bch[-depth]
+        self.wc = self.wch[-1-depth]
+        self.bc = self.bch[-1-depth]
         
         self.wch = self.wch[:-depth]
         self.bch = self.bch[:-depth]
-        
-        self.ep = self.eph[-depth]
+
+        self.ep = self.eph[-1-depth]
         self.eph = self.eph[:-depth]
         
         #print "after_rollback"
@@ -239,10 +233,12 @@ class Position(object):
         
     def make_move(self,move,verbose = False, update_in_check = True, just_board = False):
         """execute a move on the board"""
-        
+        global ht
         if move is not None:          
             castling = True if abs(self.board[move[0]]) == 6 and abs(move[1]-move[0]) == 2 else False           
             if not just_board:
+                update_hash(self,ht["ordered"][-1],move)
+                
                 #will other player be in check?                
                 if update_in_check:
                     self.in_check = self.check_check(move,castling)
@@ -299,13 +295,7 @@ class Position(object):
             else:
                 self.fifty_move_counter = 0
             self.fmh.append(self.fifty_move_counter)
-            
-            self.h = tuple(self.board)+tuple([self.sgn])
-            #print "hash=",h
-            if self.h not in self.position_hashes:
-                self.position_hashes[self.h] = 1
-            else:
-                self.position_hashes[self.h] += 1           
+                      
             if verbose:
                 #print board
                 self.print_board2(self.board)
@@ -314,61 +304,11 @@ class Position(object):
                 print "\n"
             self.history.append(self.board[:])
                                
-            if self.sgn == -1:
-                self.wc = [False,False]
-            else:
-                self.bc = [False,False]
-            #check that king has not moved, rook has not moved, \
-            #all squares inbetween are empty, king is not in check 
-            sq = 25 if self.sgn == -1 else 95 #if black just moved then update white's castling rights or vice-versa
-            if sq not in (move[0] for move in self.move_seq) and not self.king_hanging(move = None):
-                #kingside castling
-                if sq + 3 not in (move[0] for move in self.move_seq)\
-                and self.board[sq+1] == 0 and self.board[sq+2] == 0:
-                #check that king wouldn't castle over attacked square
-                    if not self.king_hanging((sq,sq+1)) and not self.king_hanging((sq,sq+2)):
-                        if sq == 25:
-                            self.wc[0] = True
-                        else:
-                            self.bc[0] = True
-                #queenside castling
-                if sq - 4 not in (move[0] for move in self.move_seq)\
-                and self.board[sq-1] == 0 and self.board[sq-2] == 0 and self.board[sq-3] == 0:              
-                    #check that king wouldn't castle over attacked square
-                    if not self.king_hanging((sq,sq-1)) and not self.king_hanging((sq,sq-2)):
-                        #add castling to offsets
-                        if sq == 25:
-                            self.wc[1] = True
-                        else:
-                            self.bc[1] = True         
-            #if other side made a null move, could player castle?  just do an 
-            #in-principle update indicating whether rook or king have already moved. then do full update when sgn changes
-            if self.sgn == 1:
-                king_sq = 25
-                rook_sqs = (28,21)
-            else:
-                king_sq = 95
-                rook_sqs = (98,91)    
-            if king_sq not in (move[0] for move in self.move_seq):
-                ks = rook_sqs[0] not in (move[0] for move in self.move_seq)
-                qs = rook_sqs[1] not in (move[0] for move in self.move_seq)
-                if self.sgn == 1:
-                    self.wc[0] = ks
-                    self.wc[1] = qs
-                else:
-                    self.bc[0] = ks
-                    self.bc[1] = qs
-            self.wch.append(self.wc)
-            self.bch.append(self.bc)
-                
-            if abs(pos.board[move[0]]) == 1 and abs(move[1] - move[0]) == 20\
-                and -pos.sgn in (pos.board[move[0] - 1],pos.board[move[0] + 1]):
-                pos.ep = move[0] % 10
-            else:
-                pos.ep = None
-            self.eph.append(self.eph)
-            
         self.sgn = 1 if self.sgn == -1 else -1
+        #if not just_board:
+        #    print self.num
+        #    print "wc =",self.wc
+        #    print "bc =",self.bc
 
     def calc_offsets(self,piece,pos,with_castling = True,in_check = None):
         """determine potential offsets for a given piece type on a certain position on the board"""
@@ -388,17 +328,21 @@ class Position(object):
         #king
         elif piece == 6: 
             offsets = [-11,-10,-9,-1,1,9,10,11]
+            #print "calc_offsets with king"
+            #print "with_castling =",with_castling
+            #print "sgn =",self.sgn, "wc =",self.wc,"bc =",self.bc
             if with_castling:               
                 if self.sgn == 1:
-                    if self.wc[0]:
+                    if self.wc[0] == True:
                         offsets.append(2)
-                    if self.wc[1]:
+                    if self.wc[1] == True:
                         offsets.append(-2)
                 else:
-                    if self.bc[0]:
+                    if self.bc[0] == True:
                         offsets.append(2)
-                    if self.bc[1]:
-                        offsets.append(-2)              
+                    if self.bc[1] == True:
+                        offsets.append(-2) 
+            #print "offsets =",offsets             
         #pawn
         elif piece == 1:
             a = 56 - piece_sgn*25
@@ -414,13 +358,13 @@ class Position(object):
             #topleft or bottomright
             if piece_sgn * self.board[pos + piece_sgn*9] < 0:
                 offsets.append(self.sgn*9)
-            elif len(self.move_seq) >0:
+            elif len(self.move_seq) > 0:
                 if (pos in range(c,d) and self.move_seq[-1] == (pos+piece_sgn*19,pos-piece_sgn) and self.board[pos-piece_sgn] == -1*piece_sgn): #pawn to the left
                     offsets.append(piece_sgn*9)
             #topright or bottomleft
             if piece_sgn * self.board[pos + piece_sgn*11] < 0:
                 offsets.append(piece_sgn*11) 
-            elif len(self.move_seq) >0:
+            elif len(self.move_seq) > 0:
                 if (pos in range(c,d) and self.move_seq[-1] == (pos+piece_sgn*21,pos+piece_sgn) and self.board[pos+piece_sgn] == -1*piece_sgn): #pawn to the right
                     offsets.append(piece_sgn*11)
         else:
@@ -565,6 +509,7 @@ class Position(object):
             self.board = old_board[:]
             self.sgn = 1 if self.sgn == -1 else -1
             #print "2nd case", a
+            #if a: print "move =",printable_moves(move)," kings_square =",kings_square
             return a
         #print "3rd case", False
         return False
@@ -572,14 +517,12 @@ class Position(object):
     def check_check(self,move,castling):
         """determines whether move puts other player in check. castling indicates whether move is a castling move"""
      
-        try:
-            opp_king_sq = self.board.index(-6*self.sgn)
-        except:
-            self.print_board2()
-            print "examining", printable_moves(move)
-            print printable_moves(self.move_seq)
-            print "check_check failing"
-            opp_king_sq = self.board.index(-6*self.sgn)
+        opp_king_sq = self.board.index(-6*self.sgn)
+        #self.print_board2()
+        #print "examining", printable_moves(move)
+        #print printable_moves(self.move_seq)
+        #print "check_check failing"
+        #opp_king_sq = self.board.index(-6*self.sgn)
         old_board = self.board[:]
         self.make_move(move,update_in_check = False,just_board = True)
         
@@ -650,16 +593,20 @@ class Position(object):
         infinite recursion when checking whether castling puts the king in check 
         (opponent's castling needn't be considered as a response to determine 
         whether king is in check after castling)"""
-        
-        #if check_for_king_hanging and with_castling:
-        #    h = tuple(self.board)+tuple([self.sgn])  
+        global mml_calls, mml_hash_returns
+        if check_for_king_hanging and with_castling:
+            mml_calls += 1
+        if check_for_king_hanging and with_castling and "move_list" in ht[ht["ordered"][-1]]:
+            #print "looked up move_list"
+            mml_hash_returns += 1
+            return ht[ht["ordered"][-1]]["move_list"] 
        
         move_list = []
         #print "calling make_move_list, colour=",colour,"check_for_king_hanging=",check_for_king_hanging
         
         pairs = ((pair[0],abs(pair[1])) for pair in enumerate(self.board) if pair[0] in on_board and self.sgn*pair[1] > 0)
         for pos, piece in pairs:
-            offsets = self.calc_offsets(piece,pos,with_castling)
+            offsets = self.calc_offsets(piece,pos,with_castling = with_castling)
             potential_targets = [pos + offset for offset in offsets]
             potential_targets = [target for target in potential_targets if target in on_board]
             targets = (target for target in potential_targets if self.sgn*self.board[target] <= 0) if piece != 1 else potential_targets # pawns already checked
@@ -674,13 +621,29 @@ class Position(object):
             else:
                 for target in targets:
                     move_list.append((pos,target))
-                    
+        #print "move_list =",printable_moves(move_list)        
         if check_for_king_hanging:
             for move in copy.copy(move_list):
                 #if after move own king is in check, remove this move from the move list
                 #print "checking whether king hanging after move=",move
                 if self.king_hanging(move):
+                    #print "\nremoved ",printable_moves(move)
                     move_list.remove(move)
+        #if "move_list" in ht[ht["ordered"][-1]] and with_castling and check_for_king_hanging:
+        #    try:
+        #        assert set(ht[ht["ordered"][-1]]["move_list"]) == set(move_list)
+        #    except:
+        #        self.print_board2()                
+        #        print "move_seq =",printable_moves(self.move_seq)
+        #        print "self.wc =", self.wc
+        #        #print "self.wch =",self.wch
+        #        print "self.bc =", self.bc
+        #        #print "self.bch =",self.bch
+        #        print "move_list from make_move_list =",printable_moves(move_list)
+        #        print "from ht ",printable_moves(ht[ht["ordered"][-1]]["move_list"])
+        #        assert set(ht[ht["ordered"][-1]]["move_list"]) == set(move_list)
+        if check_for_king_hanging and with_castling and "move_list" not in ht[ht["ordered"][-1]]:  
+            ht[ht["ordered"][-1]]["move_list"] = move_list
         return move_list
 
 def printable_moves(moves):
@@ -716,14 +679,12 @@ def evaluate_pos(pos,in_check = None):
     #print "in-check=",in_check
     reason = None
     outcome = None
-    try:
-        possible_moves = pos.make_move_list()
-    except:
-        print "\ncan't determine possible_moves"
-        pos.print_board2()
-        print printable_moves(pos.move_seq)
-        print "castling =",pos.castling
-        possible_moves = pos.make_move_list()
+    possible_moves = pos.make_move_list()
+    #print "\ncan't determine possible_moves"
+    #pos.print_board2()
+    #print printable_moves(pos.move_seq)
+    #print "castling =",pos.castling
+    #possible_moves = pos.make_move_list()
            
     if len(possible_moves) == 0: #no possible moves
         #if in check, checkmate
@@ -739,7 +700,7 @@ def evaluate_pos(pos,in_check = None):
     #ignores possible hash collision. to deal with this, store list of historic
     #board positions and in the case of triple occurence of a hash value,
     #do another check of the full board positions
-    elif pos.position_hashes[pos.h] == 3:
+    elif len(ht[ht["ordered"][-1]]) == 3:
         reason = "threefold repetition"
         outcome = 0.5
         
@@ -778,6 +739,8 @@ def see(pos,square,poss = None):
         pos.make_move((piece[1],square)) 
         #only if allowed to take! not if piece is king and sq is defended or if piece is moving out of pin
         value = max(0,captured_value - see(pos,square))
+        #print "len(pos.history) =",len(pos.history)
+        #print "move_seq =",pos.move_seq
         pos.rollback(1)
     return value
 
@@ -823,7 +786,6 @@ def tree_search(pos,depth,outcome = None, poss_moves = None, alpha = float("-inf
                 total_depth = 0, testing = False, q = True):
     """evaluates all possible moves up to the depth and returns best one along with position evaluation"""
     global beta_cutoffs,ts_calls, quiesce_calls
-    
     #pos.print_board2()
     #print "total_depth =",total_depth
     if testing:
@@ -876,13 +838,29 @@ def tree_search(pos,depth,outcome = None, poss_moves = None, alpha = float("-inf
             score = float("-inf") #want to maximise score
             random.shuffle(poss_moves) #o avoid threefold repetition
             for move in poss_moves:
-                pos.make_move(move)            
+                #print printable_moves(move)
+                #pos.print_board2()
+                #old_wc = pos.wc
+                #print "old_wc =",old_wc,"at depth =",depth
+                #old_bc = pos.bc
+                #print "old_bc =",old_bc
+                pos.make_move(move)
+                #print "after make_move","at depth =",depth
+                #amm_wc = pos.wc
+                #print "wc =",amm_wc
+                #amm_bc = pos.bc
+                #print "bc =",amm_bc                            
                 t = -1 * tree_search(pos,depth-1,alpha = -1*beta,beta = -1*alpha,\
-                                    total_depth = total_depth+1,testing = testing)[1]
+                                    total_depth = total_depth + 1,testing = testing,q = q)[1]
                 if t > score:
                     score = t
                     best_move = move
                 pos.rollback(1)
+                #print "after rollback","at depth =",depth
+                #print "wc =",pos.wc
+                #print "bc =",pos.bc
+                #assert old_wc == pos.wc
+                #assert old_bc == pos.bc
                 if score >= beta: #previous opponent's move is refuted
                     beta_cutoffs += 1
                     #print "beta-cutoff"
@@ -894,7 +872,7 @@ def tree_search(pos,depth,outcome = None, poss_moves = None, alpha = float("-inf
     #pos.rollback(0)
     return best_move, score
 
-def play_game(num_moves,white,black,verbose=True,depth1 = None,depth2 = None, testing = False):
+def play_game(num_moves,white,black,verbose = True,depth1 = None,depth2 = None, testing = False):
     """if white/black = random, computer makes random choice
     if white/black = heuristic, computer uses heuristic
     if white/black = human, computer expects human player to make inputs
@@ -902,9 +880,9 @@ def play_game(num_moves,white,black,verbose=True,depth1 = None,depth2 = None, te
     depth1 is the search depth of the first heuristic, depth 2 of the second (if present)"""
     
     global ts_calls, quiesce_calls, ht
-    ht = dict()
     
-    pos = Position(initial_board[:],in_check = False,move_seq=[])
+    pos = Position()
+    
     while pos.num <= num_moves:
         if verbose:
             print "\n"
@@ -1062,8 +1040,6 @@ def count_material(board):
             black_material += value_dict[abs(board[square])]
     return white_material - black_material
 
-pos = Position(board = initial_board[:])
-
 def perft(pos,depth):
     """recursively enumerates all leaf nodes in game tree up to depth. terminal nodes are not counted if they are not at depth "depth"."""
     #ensure perft ignores threefold repetition, 50-move-rule and insufficient material
@@ -1076,180 +1052,23 @@ def perft(pos,depth):
         nodes += perft(pos,depth - 1)
         pos.rollback(1)
     return nodes
-
-def test_suite():
-    """tests play_game function"""
     
-    #list of possible moves is correct
-    #starting position is correct
-    print "testing move lists"
-    
-    position = Position(board = initial_board[:])
-    position.print_board2()
-    expected = set([(31,41),(31,51),(32,42),(32,52),(33,43),(33,53),(34,44),(34,54),(35,45),\
-    (35,55),(36,46),(36,56),(37,47),(37,57),(38,48),(38,58),(22,41),(22,43),(27,46),(27,48)])
-    print "from generator"
-    generated = set(position.make_move_list())
-    print printable_moves(generated)
-    print "expected"
-    print printable_moves(expected)
-    assert set(position.make_move_list()) == expected
-    
-    board = [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 4, 0, 3, 5, 6, 0, 0, 4, 100, 100, 1, 1, 1, 1, 0, 1, 1, 1, 100, 100, 0, 0, 2, 0, 0, 2, 0, 0, 100, 100, 0, 0, 3, 0, 1, 0, 0, 0, 100, 100, 0, 0, -3, 0, -1, 0, 0, 0, 100, 100, 0, 0, -2, 0, 0, -2, 0, 0, 100, 100, -1, -1, -1, -1, 0, -1, -1, -1, 100, 100, -4, 0, -3, -5, -6, 0, 0, -4, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
-    move_seq = [(35, 55), (85, 65), (27, 46), (97, 76), (22, 43), (92, 73), (26, 53), (96, 63)]
-    position = Position(board = board,sgn = 1,move_seq = move_seq, wc = [True,False],bc = [True,True])
-    position.print_board2()
-    expected = set([(21, 22), (24, 35), (25, 26), (25, 35), (25, 27), (28, 27), (28, 26), (31, 41), (31, 51), (32, 42), (32, 52), (34, 44), (34, 54), (37, 47), (37, 57), (38, 48), (38, 58), (43, 64), (43, 62), (43, 51), (43, 22), (43, 35), (46, 67), (46, 65), (46, 54), (46, 58), (46, 27), (53, 64), (53, 75), (53, 86), (53, 42), (53, 62), (53, 71), (53, 44), (53, 35), (53, 26)])
-    print "from generator"
-    generated = set(position.make_move_list())
-    print printable_moves(generated)
-    print "expected"
-    print printable_moves(expected)
-    assert set(position.make_move_list()) == expected
-    
-    board = [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 4, 0, 3, 5, 6, 0, 0, 4, 100, 100, 1, 1, 1, 1, 0, 1, 1, 1, 100, 100, 0, 0, 2, 0, 0, 2, 0, 0, 100, 100, 0, 0, 0, 0, 1, 0, 0, 0, 100, 100, 0, 0, -3, 0, -1, 0, 0, 0, 100, 100, 0, 0, -2, 0, 0, -2, 0, 0, 100, 100, -1, -1, -1, -1, 0, 3, -1, -1, 100, 100, -4, 0, -3, -5, -6, 0, 0, -4, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]    
-    move_seq = [(35, 55), (85, 65), (27, 46), (97, 76), (22, 43), (92, 73), (26, 53), (96, 63), (53, 86)]
-    position = Position(board = board,sgn = -1,move_seq = move_seq)
-    position.print_board2()
-    expected = set([(95, 85), (95, 86), (95, 96)])
-    print "from generator"
-    generated = set(position.make_move_list())
-    print printable_moves(generated)
-    print "expected"
-    print printable_moves(expected)
-    assert set(position.make_move_list()) == expected
-    
-    board = [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 4, 0, 3, 5, 4, 0, 6, 0, 100, 100, 1, 1, 1, 1, 0, 1, 1, 1, 100, 100, 0, 0, 2, 0, 0, 2, 0, 0, 100, 100, 0, 0, 0, 0, 1, 0, 0, 0, 100, 100, 0, 0, -3, 0, -1, 0, 0, 0, 100, 100, 0, 0, -2, 0, 0, -2, 0, 0, 100, 100, -1, -1, -1, -1, 0, 0, -1, -1, 100, 100, -4, 0, -3, -5, -6, 0, 0, -4, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
-    move_seq = [(35, 55), (85, 65), (27, 46), (97, 76), (22, 43), (92, 73), (26, 53), (96, 63), (53, 86), (95, 86), (25, 27), (86, 95), (26, 25)]
-    position = Position(board = board,sgn = -1,move_seq = move_seq)
-    expected = set([(63, 74), (63, 85), (63, 96), (63, 52), (63, 41), (63, 72), (63, 54), (63, 45), (63, 36), (73, 92), (73, 85), (73, 52), (73, 54), (73, 61), (76, 97), (76, 55), (76, 57), (76, 68), (76, 64), (81, 71), (81, 61), (82, 72), (82, 62), (84, 74), (84, 64), (87, 77), (87, 67), (88, 78), (88, 68), (91, 92), (94, 85), (95, 85), (95, 86), (95, 96), (98, 97), (98, 96)])
-    assert set(position.make_move_list()) == expected
-
-    board = setup_position(["Ke1,Ra1,Rh1,Nb3,Ng3,Pc2,Pd2,Pe5","Ke8,Bb4,Bf3,Qh4,Pd5"])
-    move_seq = [(84,64)]
-    position = Position(board = board,sgn = 1,move_seq = move_seq, wc = [True,False],bc = [False,False])
-    position.print_board2()
-    expected = set([(21, 31),(21, 41),(21, 51),(21, 61),(21, 71),(21, 81),(21, 91),(21, 22),(21, 23),(21, 24),(25, 26),(25, 36),(25, 27),(28, 38),(28, 48),(28, 58),(28, 27),(28, 26),(33, 43),(33, 53),(42, 63),(42, 61),(42, 54),(42, 23),(65, 75),(65, 74)])
-    print "from generator"
-    generated = set(position.make_move_list())
-    print printable_moves(generated)
-    print "expected"
-    print printable_moves(expected)
-    
-    
-    assert set(position.make_move_list()) == expected
-
-    #checkmate and stalemate tests
-    board = [100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,6,-5,-6,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100]
-    position = Position(board = board,sgn = 1,move_seq = [])
-    assert len(position.make_move_list()) == 0
-    assert position.king_hanging(None) == True
-
-    board = [100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,6,-4,-6,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100]
-    position = Position(board = board,sgn = 1,move_seq = [])
-    assert len(position.make_move_list()) == 1
-    assert position.king_hanging(None) == True
-    
-    board = [100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,6,-3,-6,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100]
-    position = Position(board = board,sgn = 1,move_seq = [])
-    assert len(position.make_move_list()) == 0
-    assert position.king_hanging(None) == False
-    
-    board = [100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,6,-2,-6,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100]
-    position = Position(board = board,sgn = 1,move_seq = [])
-    assert len(position.make_move_list()) == 1
-    assert position.king_hanging(None) == False
-    
-    print "testing board set up and printing"
-    #board setup and printing test
-    new_board = setup_position(['Pa2,Pb2,Ra1,Ke1','Pa7,Ke8'])
-    pos = Position(board = new_board)
-    pos.print_board2()
-    
-    print "testing perft function"
-    position = Position(board = initial_board[:],in_check = False,move_seq=[])
-    assert perft(position,0) == 1
-    position = Position(board = initial_board[:],in_check = False,move_seq=[])
-    assert perft(position,1) == 20
-    position = Position(board = initial_board[:],in_check = False,move_seq=[])
-    assert perft(position,2) == 400
-    position = Position(board = initial_board[:],in_check = False,move_seq=[])
-    assert perft(position,3) == 8902
-    #assert perft(position,4) == 197281
-    #assert perft(position,5) == 4865609
-    
-    def test(num_games,white,black,depth1 = None, depth2 = None,verbose = False,testing = False):
-        print "white =",white," black =",black
-        if depth1:
-            print "white depth =",depth1
-        if depth2:
-            print "black depth =",depth2
-        print "num_games =",num_games
-        time0 = time.time()
-        white_wins = 0
-        black_wins = 0
-        draws = 0
-        undecided_games = 0
-        for count in range(num_games):
-            outcome = play_game(500,white,black,verbose = verbose, depth1 = depth1, \
-                                depth2 = depth2, testing = testing)
-            if outcome == 1:
-                white_wins += 1
-            elif outcome == 0:
-                black_wins += 1
-            elif outcome == 0.5:
-                draws += 1
-            else:
-                undecided_games += 1
-        time1 = time.time()
-        print "total time elapsed = ",time1-time0,"seconds"
-        white_percentage = 1.0 * (white_wins + 0.5 * draws) / (white_wins + black_wins + draws)
-        print "white average score", white_percentage
-    
-    test(100,"random","random",verbose = False)    
-    test(10,"heuristic","random",depth1 = 1,depth2 = None,verbose = False) 
-    #manually check that if depth > 1, ts_calls << total number of nodes
-    #manually check that ts_calls and quiesce_calls are about the same order of magnitude
-    #assert beta_cutoffs != 0
-    
-    print "testing see"
-    position = Position(board = initial_board[:])
-    assert see(position, 55) == 0
-    
-    board = setup_position(["Kg1,Qd3,Ra1,Re1,Bd2,Nf3,Pa5,Pc2,Pd5,Pe4,Pf4,Pg3,Ph3",\
-                            "Kg8,Qe7,Ra8,Re8,Bb5,Nd7,Nh5,Bg7,Pa6,Pb7,Pc5,Pc4,Pd6,Pf5,Pg6,Ph7"])
-    position = Position(board,sgn = -1)
-    assert see(position,21) == 2
-    assert see(position,44) == 9
-    assert see(position,56) == 0
-    assert see(position,47) == 1
-    assert see(position,55) == 1
-    
-    
-ts_calls = 0
-beta_cutoffs = 0
-quiesce_calls = 0
-
-cProfile.run("test_suite()")
-
-table = None
-
 def zobrist_init():
     """fill a table of random bitstrings"""
     
     global table
     table = [0]*77
-    #first 64 elements of table hold piece-square pairs, 65 is for black to move, 66-69 for castling rights, 70-77 for e.p. column
+    #indices 0-63 of table hold piece-square pairs, 64 is for black to move, 65-68 for castling rights, 69-76 for e.p. column
     for i in range(64): 
         table[i] = [0]*12
         for j in range(12):
             s = ""
-            for k in range(25):
+            for k in range(64):
                 s += str(random.randint(0,1))
             table[i][j] = s
     for i in range(64,77):
         s = ""
-        for k in range(25):
+        for k in range(64):
             s += str(random.randint(0,1))
         table[i] = s
     return table
@@ -1270,7 +1089,7 @@ def xor(a,b):
 def zobrist_hash(pos):
     global table
     
-    h = '0'*25
+    h = '0'*64
     #square-piece pairs
     for i in range(len(on_board)):
         if pos.board[on_board[i]] != 0:
@@ -1298,11 +1117,12 @@ def zobrist_hash(pos):
     #en passant column
     if pos.ep is not None: #pos.ep indicate e.p. column (where pawn has just made a double-step)
         h = xor(h,table[69 + pos.ep])
-    
-    
+        
     return h
 
 def update_hash(pos,h,move):
+    global ht
+    
     start_sq = on_board.index(move[0])
     start_piece = pos.board[move[0]] + 6 if pos.board[move[0]] < 0 else pos.board[move[0]] + 5
     
@@ -1349,40 +1169,55 @@ def update_hash(pos,h,move):
                 h = xor(h,table[start_sq - 1][6]) #white pawn to the left of start_sq is gone
                  
     #other side to move
-    h = xor(h,table[65])
+    h = xor(h,table[64])
     
-    #castling rights: take this out of make_move
+    #castling rights
     
     old_wc = pos.wc[:]
     old_bc = pos.bc[:]
     
-    if pos.sgn == -1:
-        pos.wc = [False,False]
+    #print pos.sgn
+    if pos.sgn == 1:
+        pos.bc = (False,False)
     else:
-        pos.bc = [False,False]
-    sq = 25 if pos.sgn == -1 else 95 #if black just moved then update white's castling rights or vice-versa
-    #check that king has not moved, rook has not moved, \
+        pos.wc = (False,False)
+    sq = 95 if pos.sgn == 1 else 25 #if black just moved then update white's castling rights or vice-versa
+    #check that king has not moved, rook has not moved, rook is still there,\
     #all squares inbetween are empty, king is not in check
-    if sq not in (move[0] for move in pos.move_seq) and not pos.king_hanging(move = None):
+    c = abs(pos.board[move[0]]) == 6 and abs(move[1]-move[0]) == 2
+    starts = [m[0] for m in pos.move_seq]
+    if sq not in starts and not pos.check_check(move,c):
+        ks = False
         #kingside castling
-        if sq + 3 not in (move[0] for move in pos.move_seq)\
-        and pos.board[sq+1] == 0 and pos.board[sq+2] == 0:
+        if sq + 3 not in starts and abs(pos.board[sq+3]) == 4 and pos.board[sq+1] == 0 and pos.board[sq+2] == 0:
         #check that king wouldn't castle over attacked square
+            
+            old_board = pos.board[:]
+            pos.make_move(move,update_in_check = False,just_board = True)
+     
             if not pos.king_hanging((sq,sq+1)) and not pos.king_hanging((sq,sq+2)):
-                if sq == 25:
-                    pos.wc[0] = True
-                else:
-                    pos.bc[0] = True
+                ks = True       
+            pos.sgn = 1 if pos.sgn == -1 else -1
+            pos.board = old_board[:]
+        
+        qs = False
         #queenside castling
-        if sq - 4 not in (move[0] for move in pos.move_seq)\
-        and pos.board[sq-1] == 0 and pos.board[sq-2] == 0 and pos.board[sq-3] == 0:              
+        if sq - 4 not in starts and abs(pos.board[sq-4]) == 4 and pos.board[sq-1] == 0 and pos.board[sq-2] == 0 and pos.board[sq-3] == 0:              
             #check that king wouldn't castle over attacked square
+            
+            old_board = pos.board[:]
+            pos.make_move(move,update_in_check = False,just_board = True)
+            
             if not pos.king_hanging((sq,sq-1)) and not pos.king_hanging((sq,sq-2)):
                 #add castling to offsets
-                if sq == 25:
-                    pos.wc[1] = True
-                else:
-                    pos.bc[1] = True         
+                qs = True
+            pos.sgn = 1 if pos.sgn == -1 else -1 
+            pos.board = old_board[:]
+            if sq == 25:
+                pos.wc = (ks,qs)
+            else:
+                pos.bc = (ks,qs)
+                   
     #if other side made a null move, could player castle?  just do an 
     #in-principle update indicating whether rook or king have already moved. then do full update when sgn changes
     if pos.sgn == 1:
@@ -1391,59 +1226,350 @@ def update_hash(pos,h,move):
     else:
         king_sq = 95
         rook_sqs = (98,91)    
-    if king_sq not in (move[0] for move in pos.move_seq):
-        ks = rook_sqs[0] not in (move[0] for move in pos.move_seq)
-        qs = rook_sqs[1] not in (move[0] for move in pos.move_seq)
+    if king_sq != move[0] and king_sq not in starts:
+        ks = rook_sqs[0] != move[0] and rook_sqs[0] not in starts
+        qs = rook_sqs[1] != move[0] and rook_sqs[1] not in starts
         if pos.sgn == 1:
-            pos.wc[0] = ks
-            pos.wc[1] = qs
+            pos.wc = (ks,qs)
         else:
-            pos.bc[0] = ks
-            pos.bc[1] = qs
+            pos.bc = (ks,qs)
     pos.wch.append(pos.wc)
     pos.bch.append(pos.bc)
     
     if pos.wc[0] != old_wc[0]:#white kingside
-        h = xor(h,table[66])
+        h = xor(h,table[65])
     if pos.wc[1] != old_wc[1]:#white queenside
-        h = xor(h,table[67])
+        h = xor(h,table[66])
     if pos.bc[0] != old_bc[0]:#black kingside
-        h = xor(h,table[68])
+        h = xor(h,table[67])
     if pos.bc[1] != old_bc[1]:#black queenside
-        h = xor(h,table[69])        
+        h = xor(h,table[68])        
                                                            
     #ep column
     old_ep = pos.ep
+    #print abs(pos.board[move[0]]) == 1
+    #print abs(move[1] - move[0]) == 20
+    #print -pos.sgn
+    #print -pos.sgn in (pos.board[move[1] - 1],pos.board[move[1] + 1])
     if abs(pos.board[move[0]]) == 1 and abs(move[1] - move[0]) == 20\
-        and -pos.sgn in (pos.board[move[0] - 1],pos.board[move[0] + 1]):
+        and -pos.sgn in (pos.board[move[1] - 1],pos.board[move[1] + 1]):
         pos.ep = move[0] % 10
     else:
         pos.ep = None
     if old_ep != pos.ep:
         if old_ep is not None:
-            h = xor(h,table[69 + old_ep]) #xor out old pos.ep
+            h = xor(h,table[68 + old_ep]) #xor out old pos.ep
         if pos.ep is not None:
-            h = xor(h,table[69 + pos.ep]) #xor in new pos.ep
-            
+            h = xor(h,table[68 + pos.ep]) #xor in new pos.ep
+    pos.eph.append(pos.ep)        
+    ht["ordered"].append(h)
+    if h in ht:
+        ht[h]["moves"].append(pos.num + 1)
+    else:
+        ht[h] = {"moves": [pos.num + 1]}
     return h
-    
-    
-    
 
-#zobrist_init()
-##print table
-#
-#hashtable = dict()
-#
-#h = zobrist_hash(initial_board)
-#print h
-#
-#pos = Position(initial_board[:])
-#
-#h1 = update_hash(pos.board,h,(35,55))
-#print h1
-#pos.make_move((35,55))
-#h2 = update_hash(pos.board,h1,(55,35))
-#print h2
-#            
+def test_suite():
+    """tests play_game function"""
     
+    #list of possible moves is correct
+    #starting position is correct
+    print "testing move lists"
+    
+    position = Position()
+    position.print_board2()
+    expected = set([(31,41),(31,51),(32,42),(32,52),(33,43),(33,53),(34,44),(34,54),(35,45),\
+    (35,55),(36,46),(36,56),(37,47),(37,57),(38,48),(38,58),(22,41),(22,43),(27,46),(27,48)])
+    print "from generator"
+    generated = set(position.make_move_list())
+    print printable_moves(generated)
+    print "expected"
+    print printable_moves(expected)
+    assert set(position.make_move_list()) == expected
+    
+    board = [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 4, 0, 3, 5, 6, 0, 0, 4, 100, 100, 1, 1, 1, 1, 0, 1, 1, 1, 100, 100, 0, 0, 2, 0, 0, 2, 0, 0, 100, 100, 0, 0, 3, 0, 1, 0, 0, 0, 100, 100, 0, 0, -3, 0, -1, 0, 0, 0, 100, 100, 0, 0, -2, 0, 0, -2, 0, 0, 100, 100, -1, -1, -1, -1, 0, -1, -1, -1, 100, 100, -4, 0, -3, -5, -6, 0, 0, -4, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+    move_seq = [(35, 55), (85, 65), (27, 46), (97, 76), (22, 43), (92, 73), (26, 53), (96, 63)]
+    position = Position(board = board,sgn = 1,move_seq = move_seq, wc = [True,False],bc = [True,True])
+    position.print_board2()
+    expected = set([(21, 22), (24, 35), (25, 26), (25, 35), (25, 27), (28, 27), (28, 26), (31, 41), (31, 51), (32, 42), (32, 52), (34, 44), (34, 54), (37, 47), (37, 57), (38, 48), (38, 58), (43, 64), (43, 62), (43, 51), (43, 22), (43, 35), (46, 67), (46, 65), (46, 54), (46, 58), (46, 27), (53, 64), (53, 75), (53, 86), (53, 42), (53, 62), (53, 71), (53, 44), (53, 35), (53, 26)])
+    print "from generator"
+    generated = set(position.make_move_list())
+    print printable_moves(generated)
+    print "expected"
+    print printable_moves(expected)
+    assert set(position.make_move_list()) == expected
+    
+    board = [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 4, 0, 3, 5, 6, 0, 0, 4, 100, 100, 1, 1, 1, 1, 0, 1, 1, 1, 100, 100, 0, 0, 2, 0, 0, 2, 0, 0, 100, 100, 0, 0, 0, 0, 1, 0, 0, 0, 100, 100, 0, 0, -3, 0, -1, 0, 0, 0, 100, 100, 0, 0, -2, 0, 0, -2, 0, 0, 100, 100, -1, -1, -1, -1, 0, 3, -1, -1, 100, 100, -4, 0, -3, -5, -6, 0, 0, -4, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]    
+    move_seq = [(35, 55), (85, 65), (27, 46), (97, 76), (22, 43), (92, 73), (26, 53), (96, 63), (53, 86)]
+    position = Position(board = board,sgn = -1,move_seq = move_seq)
+    position.print_board2()
+    expected = set([(95, 85), (95, 86), (95, 96)])
+    print "from generator"
+    generated = set(position.make_move_list())
+    print printable_moves(generated)
+    print "expected"
+    print printable_moves(expected)
+    assert set(position.make_move_list()) == expected
+    
+    board = [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 4, 0, 3, 5, 4, 0, 6, 0, 100, 100, 1, 1, 1, 1, 0, 1, 1, 1, 100, 100, 0, 0, 2, 0, 0, 2, 0, 0, 100, 100, 0, 0, 0, 0, 1, 0, 0, 0, 100, 100, 0, 0, -3, 0, -1, 0, 0, 0, 100, 100, 0, 0, -2, 0, 0, -2, 0, 0, 100, 100, -1, -1, -1, -1, 0, 0, -1, -1, 100, 100, -4, 0, -3, -5, -6, 0, 0, -4, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+    move_seq = [(35, 55), (85, 65), (27, 46), (97, 76), (22, 43), (92, 73), (26, 53), (96, 63), (53, 86), (95, 86), (25, 27), (86, 95), (26, 25)]
+    position = Position(board = board,sgn = -1,move_seq = move_seq, wc = [True,True], bc = [False,False])
+    expected = set([(63, 74), (63, 85), (63, 96), (63, 52), (63, 41), (63, 72), (63, 54), (63, 45), (63, 36), (73, 92), (73, 85), (73, 52), (73, 54), (73, 61), (76, 97), (76, 55), (76, 57), (76, 68), (76, 64), (81, 71), (81, 61), (82, 72), (82, 62), (84, 74), (84, 64), (87, 77), (87, 67), (88, 78), (88, 68), (91, 92), (94, 85), (95, 85), (95, 86), (95, 96), (98, 97), (98, 96)])
+    print "from generator"
+    generated = set(position.make_move_list())
+    print printable_moves(generated)
+    print "expected"
+    print printable_moves(expected)
+    assert set(position.make_move_list()) == expected
+
+    board = setup_position(["Ke1,Ra1,Rh1,Nb3,Ng3,Pc2,Pd2,Pe5","Ke8,Bb4,Bf3,Qh4,Pd5"])
+    move_seq = [(84,64)]
+    position = Position(board = board,sgn = 1,move_seq = move_seq, wc = [True,False],bc = [False,False])
+    position.print_board2()
+    expected = set([(21, 31),(21, 41),(21, 51),(21, 61),(21, 71),(21, 81),(21, 91),(21, 22),(21, 23),(21, 24),(25, 26),(25, 36),(25, 27),(28, 38),(28, 48),(28, 58),(28, 27),(28, 26),(33, 43),(33, 53),(42, 63),(42, 61),(42, 54),(42, 23),(65, 75),(65, 74)])
+    print "from generator"
+    generated = set(position.make_move_list())
+    print printable_moves(generated)
+    print "expected"
+    print printable_moves(expected)
+    
+    assert set(position.make_move_list()) == expected
+
+    #checkmate and stalemate tests
+    board = [100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,6,-5,-6,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100]
+    position = Position(board = board,sgn = 1,move_seq = [])
+    assert len(position.make_move_list()) == 0
+    assert position.king_hanging(None) == True
+
+    board = [100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,6,-4,-6,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100]
+    position = Position(board = board,sgn = 1,move_seq = [])
+    assert len(position.make_move_list()) == 1
+    assert position.king_hanging(None) == True
+    
+    board = [100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,6,-3,-6,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100]
+    position = Position(board = board,sgn = 1,move_seq = [])
+    assert len(position.make_move_list()) == 0
+    assert position.king_hanging(None) == False
+    
+    board = [100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,6,-2,-6,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100]
+    position = Position(board = board,sgn = 1,move_seq = [])
+    assert len(position.make_move_list()) == 1
+    assert position.king_hanging(None) == False
+    
+    print "testing board set up and printing"
+    #board setup and printing test
+    new_board = setup_position(['Pa2,Pb2,Ra1,Ke1','Pa7,Ke8'])
+    pos = Position(board = new_board)
+    pos.print_board2()
+    
+    print "testing hashing"
+    global ht
+    ht = dict()    
+    zobrist_init()
+    
+    h = []
+    
+    pos = Position(initial_board[:])
+    assert pos.wc == (False,False)
+    assert pos.bc == (True,True)
+    assert pos.ep is None
+    h1 = zobrist_hash(pos)
+    h.append(h1)
+    ht["ordered"].append(h1)
+    
+    move = (27,46) #Ng1-f3
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    assert pos.wc == (True,True)
+    assert pos.bc == (False,False)
+    assert pos.ep is None
+    
+    move = (97,76) #Ng8-f6
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    
+    move = (46,27) #Nf3-g1
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    
+    move = (76,97) #Nf6-g8
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    assert h[0] == h[4]
+    
+    move = (31,41) #a2-a3
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    
+    move = (84,64) #d7-d5
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    
+    move = (22,43) #b1-c3
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    
+    move = (64,54) #d5-d4
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    
+    move = (35,55) #e2-e4, now ep possible
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    assert pos.ep == 5
+    
+    move = (94,84) #Qd8-d7
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    
+    move = (26,53) #Bf1-c4, now ep no longer possible
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    assert h[8] != h[10]
+    
+    move = (84,94) #Qd7-d8
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    
+    move = (53,26) #Bc4-f1
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    assert pos.sgn == -1
+    
+    assert len(set(h)) == 13
+    
+    move = (54,43) #d4-c3
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    
+    move = (34,43) #d2-c3
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    
+    move = (94,24) #Qd8-d1
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    
+    move = (25,24) #Ke1-d1
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    
+    move = (93,75) #Bc8-e6
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    
+    move = (24,25) #Kd1-e1
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    
+    move = (92,71) #Nb8-a6
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    assert pos.wc == (False,False)
+    
+    move = (23,67) #Bc1-g5
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    assert pos.bc == (False,True)
+    
+    move = (88,68) #h7-h5
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    
+    move = (26,62) #Bf1-b5
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    assert pos.bc == (False,False)
+    
+    assert len(set(h)) == 23
+    
+    move = (83,73) #c7-c6
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    
+    move = (62,71) #Bb5-a6
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    assert pos.bc == (False,True)
+    
+    move = (97,76) #Ng8-f6
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    
+    move = (71,82) #Ba6-b7
+    h.append(update_hash(pos,h[-1],move)) 
+    pos.make_move(move)
+    assert pos.bc == (False,False)
+    assert len(set(h)) == 27
+    
+    print "testing perft function"
+    position = Position()
+    assert perft(position,0) == 1
+    position = Position()
+    assert perft(position,1) == 20
+    position = Position()
+    assert perft(position,2) == 400
+    position = Position()
+    assert perft(position,3) == 8902
+    #assert perft(position,4) == 197281
+    #assert perft(position,5) == 4865609
+    
+    def test(num_games,white,black,depth1 = None, depth2 = None,verbose = False,testing = False):
+        print "white =",white," black =",black
+        if depth1:
+            print "white depth =",depth1
+        if depth2:
+            print "black depth =",depth2
+        print "num_games =",num_games
+        time0 = time.time()
+        white_wins = 0
+        black_wins = 0
+        draws = 0
+        undecided_games = 0
+        for count in range(num_games):
+            outcome = play_game(500,white,black,verbose = verbose, depth1 = depth1, \
+                                depth2 = depth2, testing = testing)
+            #print "len(ht) =",len(ht)
+            if outcome == 1:
+                white_wins += 1
+            elif outcome == 0:
+                black_wins += 1
+            elif outcome == 0.5:
+                draws += 1
+            else:
+                undecided_games += 1
+        time1 = time.time()
+        print "total time elapsed = ",time1-time0,"seconds"
+        white_percentage = 1.0 * (white_wins + 0.5 * draws) / (white_wins + black_wins + draws)
+        print "white average score", white_percentage
+    
+    #test(1,"random","random",verbose = False)    
+    test(1,"random","heuristic",depth1 = None,depth2 = 4,verbose = False) 
+    #test(10,"heuristic","random",depth1 = 2,depth2 = None,verbose = False) 
+    #manually check that if depth > 1, ts_calls << total number of nodes
+    #manually check that ts_calls and quiesce_calls are about the same order of magnitude
+    #assert beta_cutoffs != 0
+    print "mml_calls =",mml_calls
+    print "mml_hash_returns =",mml_hash_returns
+    
+    print "testing see"
+    position = Position(board = initial_board[:])
+    assert see(position, 55) == 0
+    
+    board = setup_position(["Kg1,Qd3,Ra1,Re1,Bd2,Nf3,Pa5,Pc2,Pd5,Pe4,Pf4,Pg3,Ph3",\
+                            "Kg8,Qe7,Ra8,Re8,Bb5,Nd7,Nh5,Bg7,Pa6,Pb7,Pc5,Pc4,Pd6,Pf5,Pg6,Ph7"])
+    position = Position(board,sgn = -1)
+    assert see(position,21) == 2
+    assert see(position,44) == 9
+    assert see(position,56) == 0
+    assert see(position,47) == 1
+    assert see(position,55) == 1
+    
+    
+ts_calls = 0
+beta_cutoffs = 0
+quiesce_calls = 0
+mml_calls = 0
+mml_hash_returns = 0
+
+cProfile.run("test_suite()")
